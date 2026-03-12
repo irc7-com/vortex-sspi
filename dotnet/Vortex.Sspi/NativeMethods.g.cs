@@ -18,9 +18,17 @@ namespace Vortex.Sspi
 
 
 
+        /// <summary>
+        ///  # Safety
+        ///  Caller must ensure that `input_ptr` is valid for `input_len` bytes and points to properly initialized memory.
+        /// </summary>
         [DllImport(__DllName, EntryPoint = "process_token", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern SspiResult process_token(byte* input_ptr, uint input_len);
 
+        /// <summary>
+        ///  # Safety
+        ///  Caller must ensure that `ptr` and `len` match a previously allocated buffer from this library.
+        /// </summary>
         [DllImport(__DllName, EntryPoint = "free_buffer", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void free_buffer(byte* ptr, uint len);
 

@@ -6,7 +6,7 @@ fn main() {
         .input_extern_file("src/lib.rs")
         .csharp_class_name("NativeMethods")
         .csharp_namespace("Vortex.Sspi")
-        .csharp_dll_name("vortex_sspi") 
+        .csharp_dll_name("vortex_sspi")
         .generate_csharp_file("../../dotnet/Vortex.Sspi/NativeMethods.g.cs")
         .expect("Failed to generate C# bindings");
 }
