@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/provider-gatekeeper",
+    "crates/provider-ntlm",
+    "crates/sspi-core",
+    "crates/sspi-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"

@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/dotnet/">
+    <Project Path="dotnet/Vortex.Sspi.Test/Vortex.Sspi.Test.csproj" />
+    <Project Path="dotnet/Vortex.Sspi/Vortex.Sspi.csproj" />
+  </Folder>
+</Solution>

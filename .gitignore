@@ -1,0 +1,5 @@
+# Ignore the target directory, which is where Cargo builds the project
+/target
+
+# Ignore Cargo.lock, it is not needed for libraries, and can cause merge conflicts
+/Cargo.lock

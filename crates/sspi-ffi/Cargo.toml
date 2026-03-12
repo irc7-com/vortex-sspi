@@ -1,0 +1,15 @@
+[package]
+name = "vortex_sspi"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[build-dependencies]
+csbindgen = "1.9"
+
+[dependencies]
+sspi-core = { path = "../sspi-core" }
+provider-ntlm = { path = "../provider-ntlm" }
+provider-gatekeeper = { path = "../provider-gatekeeper" }

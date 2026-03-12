@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <PackageId>Vortex.Sspi</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>JD</Authors>
+    <Description>SSPI wrapper for IRCX (GateKeeper and NTLM)</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="../../target/$(Configuration.ToLower())/vortex_sspi.dll">
+      <PackagePath>runtimes/win-x64/native/</PackagePath>
+      <Pack>true</Pack>
+      <Link>vortex_sspi.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Target Name="BuildRust" BeforeTargets="DispatchToInnerBuild;BeforeBuild">
+    <PropertyGroup>
+      <CargoFlags Condition="'$(Configuration)' == 'Release'">--release</CargoFlags>
+      <CargoFlags Condition="'$(Configuration)' == 'Debug'"></CargoFlags>
+    </PropertyGroup>
+
+    <Message Importance="high" Text="--- Building Rust ($(Configuration)) ---" />
+    <Exec Command="cargo build $(CargoFlags) --manifest-path ../../Cargo.toml" WorkingDirectory="$(ProjectDir)" />
+</Target>
+</Project>
