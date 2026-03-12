@@ -10,24 +10,83 @@
     <Version>0.1.0</Version>
     <Authors>JD</Authors>
     <Description>SSPI wrapper for IRCX (GateKeeper and NTLM)</Description>
+
+    <CargoProfile Condition="'$(Configuration)' == 'Release'">release</CargoProfile>
+    <CargoProfile Condition="'$(Configuration)' == 'Debug'">debug</CargoProfile>
+    <CargoFlags Condition="'$(Configuration)' == 'Release'">--release</CargoFlags>
+    <CargoFlags Condition="'$(Configuration)' == 'Debug'"></CargoFlags>
+    <RustTargetBase>../../target</RustTargetBase>
+
+    <IsWindows Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IsWindows>
+    <IsLinux Condition="$([MSBuild]::IsOSPlatform('Linux'))">true</IsLinux>
+    <IsMacOS Condition="$([MSBuild]::IsOSPlatform('OSX'))">true</IsMacOS>
+    <RidArch>$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</RidArch>
+
+    <WinX64Triple>x86_64-pc-windows-msvc</WinX64Triple>
+    <WinArm64Triple>aarch64-pc-windows-msvc</WinArm64Triple>
+    <LinuxX64Triple>x86_64-unknown-linux-gnu</LinuxX64Triple>
+    <LinuxArm64Triple>aarch64-unknown-linux-gnu</LinuxArm64Triple>
+    <OsxX64Triple>x86_64-apple-darwin</OsxX64Triple>
+    <OsxArm64Triple>aarch64-apple-darwin</OsxArm64Triple>
+
+    <NativeLibLinux>libvortex_sspi.so</NativeLibLinux>
+    <NativeLibMac>libvortex_sspi.dylib</NativeLibMac>
+    <NativeLibWin>vortex_sspi.dll</NativeLibWin>
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="../../target/$(Configuration.ToLower())/vortex_sspi.dll">
+    <Content Include="$(RustTargetBase)/$(WinX64Triple)/$(CargoProfile)/$(NativeLibWin)" Condition="Exists('$(RustTargetBase)/$(WinX64Triple)/$(CargoProfile)/$(NativeLibWin)')">
       <PackagePath>runtimes/win-x64/native/</PackagePath>
       <Pack>true</Pack>
-      <Link>vortex_sspi.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>$(NativeLibWin)</Link>
+      <CopyToOutputDirectory Condition="'$(IsWindows)' == 'true' And '$(RidArch)' == 'x64'">PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(RustTargetBase)/$(WinArm64Triple)/$(CargoProfile)/$(NativeLibWin)" Condition="Exists('$(RustTargetBase)/$(WinArm64Triple)/$(CargoProfile)/$(NativeLibWin)')">
+      <PackagePath>runtimes/win-arm64/native/</PackagePath>
+      <Pack>true</Pack>
+      <Link>$(NativeLibWin)</Link>
+      <CopyToOutputDirectory Condition="'$(IsWindows)' == 'true' And '$(RidArch)' == 'arm64'">PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
 
-  <Target Name="BuildRust" BeforeTargets="DispatchToInnerBuild;BeforeBuild">
-    <PropertyGroup>
-      <CargoFlags Condition="'$(Configuration)' == 'Release'">--release</CargoFlags>
-      <CargoFlags Condition="'$(Configuration)' == 'Debug'"></CargoFlags>
-    </PropertyGroup>
+  <ItemGroup>
+    <Content Include="$(RustTargetBase)/$(LinuxX64Triple)/$(CargoProfile)/$(NativeLibLinux)" Condition="Exists('$(RustTargetBase)/$(LinuxX64Triple)/$(CargoProfile)/$(NativeLibLinux)')">
+      <PackagePath>runtimes/linux-x64/native/</PackagePath>
+      <Pack>true</Pack>
+      <Link>$(NativeLibLinux)</Link>
+      <CopyToOutputDirectory Condition="'$(IsLinux)' == 'true' And '$(RidArch)' == 'x64'">PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(RustTargetBase)/$(LinuxArm64Triple)/$(CargoProfile)/$(NativeLibLinux)" Condition="Exists('$(RustTargetBase)/$(LinuxArm64Triple)/$(CargoProfile)/$(NativeLibLinux)')">
+      <PackagePath>runtimes/linux-arm64/native/</PackagePath>
+      <Pack>true</Pack>
+      <Pack>true</Pack>
+      <Link>$(NativeLibLinux)</Link>
+      <CopyToOutputDirectory Condition="'$(IsLinux)' == 'true' And '$(RidArch)' == 'arm64'">PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="$(RustTargetBase)/$(OsxX64Triple)/$(CargoProfile)/$(NativeLibMac)" Condition="Exists('$(RustTargetBase)/$(OsxX64Triple)/$(CargoProfile)/$(NativeLibMac)')">
+      <PackagePath>runtimes/osx-x64/native/</PackagePath>
+      <Pack>true</Pack>
+      <Link>$(NativeLibMac)</Link>
+      <CopyToOutputDirectory Condition="'$(IsMacOS)' == 'true' And '$(RidArch)' == 'x64'">PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(RustTargetBase)/$(OsxArm64Triple)/$(CargoProfile)/$(NativeLibMac)" Condition="Exists('$(RustTargetBase)/$(OsxArm64Triple)/$(CargoProfile)/$(NativeLibMac)')">
+      <PackagePath>runtimes/osx-arm64/native/</PackagePath>
+      <Pack>true</Pack>
+      <Link>$(NativeLibMac)</Link>
+      <CopyToOutputDirectory Condition="'$(IsMacOS)' == 'true' And '$(RidArch)' == 'arm64'">PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Target Name="BuildRust" BeforeTargets="BeforeBuild" Condition="'$(BuildRust)' != 'false'">
     <Message Importance="high" Text="--- Building Rust ($(Configuration)) ---" />
-    <Exec Command="cargo build $(CargoFlags) --manifest-path ../../Cargo.toml" WorkingDirectory="$(ProjectDir)" />
-</Target>
+    <Exec Condition="'$(IsWindows)' == 'true'" Command="cargo build $(CargoFlags) --target $(WinX64Triple)" WorkingDirectory="../../" />
+    <Exec Condition="'$(IsWindows)' == 'true'" Command="cargo build $(CargoFlags) --target $(WinArm64Triple)" WorkingDirectory="../../" />
+    <Exec Condition="'$(IsLinux)' == 'true' And '$(RidArch)' == 'x64'" Command="cargo build $(CargoFlags) --target $(LinuxX64Triple)" WorkingDirectory="../../" />
+    <Exec Condition="'$(IsLinux)' == 'true' And '$(RidArch)' == 'arm64'" Command="cargo build $(CargoFlags) --target $(LinuxArm64Triple)" WorkingDirectory="../../" />
+    <Exec Condition="'$(IsMacOS)' == 'true'" Command="cargo build $(CargoFlags) --target $(OsxX64Triple)" WorkingDirectory="../../" />
+    <Exec Condition="'$(IsMacOS)' == 'true'" Command="cargo build $(CargoFlags) --target $(OsxArm64Triple)" WorkingDirectory="../../" />
+  </Target>
 </Project>
