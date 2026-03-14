@@ -89,6 +89,15 @@ namespace Vortex.Sspi
         [DllImport(__DllName, EntryPoint = "ntlm_server_destroy", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void ntlm_server_destroy(NtlmProvider* handle);
 
+        /// <summary>
+        ///  # Safety
+        ///  - `out_hash` must be a valid pointer to at least 16 bytes.
+        ///  - `password_utf16` must be a valid pointer to a null-terminated UTF-16 string.
+        ///    Returns 0 on success, nonzero on error.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "ntlm_hash_password", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int ntlm_hash_password(byte* out_hash, ushort* password_utf16);
+
 
     }
 

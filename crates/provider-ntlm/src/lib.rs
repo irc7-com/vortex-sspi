@@ -12,10 +12,12 @@
 //! 5. `ntlm_server_verify()` — inject NT hash via `custom_set_auth_identity` and complete auth
 //! 6. `ntlm_server_destroy()` — free provider
 
+use md4::{Digest, Md4};
 use sspi::{
     AuthIdentity, AuthIdentityBuffers, BufferType, CredentialUse, DataRepresentation, Ntlm,
     NtlmHash, SecurityBuffer, ServerRequestFlags, Sspi, SspiEx, SspiImpl,
 };
+use std::{ptr, slice};
 use windows_sys::Win32::Foundation::{
     SEC_E_INTERNAL_ERROR, SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN, SEC_E_LOGON_DENIED, SEC_E_OK,
     SEC_I_CONTINUE_NEEDED,
@@ -320,4 +322,38 @@ pub unsafe extern "C" fn ntlm_server_destroy(handle: *mut NtlmProvider) {
             let _ = Box::from_raw(handle);
         }
     }
+}
+
+/// # Safety
+/// - `out_hash` must be a valid pointer to at least 16 bytes.
+/// - `password_utf16` must be a valid pointer to a null-terminated UTF-16 string.
+///   Returns 0 on success, nonzero on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ntlm_hash_password(out_hash: *mut u8, password_utf16: *const u16) -> i32 {
+    if out_hash.is_null() || password_utf16.is_null() {
+        return SEC_E_INVALID_HANDLE;
+    }
+
+    // Find the length of the null-terminated UTF-16 string
+    let mut len = 0;
+    while unsafe { *password_utf16.add(len) } != 0 {
+        len += 1;
+    }
+
+    // Convert UTF-16 to Rust String
+    let password_slice = unsafe { slice::from_raw_parts(password_utf16, len) };
+    let password = match String::from_utf16(password_slice) {
+        Ok(s) => s,
+        Err(_) => return SEC_E_INVALID_TOKEN,
+    };
+
+    // NTLM hash = MD4(UTF-16LE(PASSWORD))
+    let mut md4 = Md4::new();
+    md4.update(password.as_bytes());
+    let hash = md4.finalize();
+
+    // Write the hash to the output buffer
+    unsafe { ptr::copy_nonoverlapping(hash.as_ptr(), out_hash, 16) };
+
+    SEC_E_OK
 }

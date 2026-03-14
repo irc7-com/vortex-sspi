@@ -4,5 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+md4 = "0.10.2"
 sspi = "0.18.9"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation"] }
