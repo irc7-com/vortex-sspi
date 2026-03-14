@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -7,9 +7,14 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <PackageId>Vortex.Sspi</PackageId>
-    <Version>0.1.0</Version>
     <Authors>JD</Authors>
     <Description>SSPI wrapper for IRCX (GateKeeper and NTLM)</Description>
+
+    <!-- Version sync from Cargo.toml -->
+    <CargoTomlPath>$(MSBuildProjectDirectory)/../../Cargo.toml</CargoTomlPath>
+    <CargoTomlContent Condition="Exists('$(CargoTomlPath)')">$([System.IO.File]::ReadAllText('$(CargoTomlPath)'))</CargoTomlContent>
+    <Version Condition="'$(CargoTomlContent)' != ''">$([System.Text.RegularExpressions.Regex]::Match($(CargoTomlContent), 'version\s*=\s*&quot;([^&quot;]+)&quot;').Groups[1].Value)</Version>
+    <Version Condition="'$(Version)' == ''">0.1.0</Version>
 
     <CargoProfile Condition="'$(Configuration)' == 'Release'">release</CargoProfile>
     <CargoProfile Condition="'$(Configuration)' == 'Debug'">debug</CargoProfile>

@@ -1,32 +1,12 @@
-﻿using System.Text;
+using System.Text;
 using Vortex.Sspi;
 
-Console.WriteLine("=== Vortex SSPI Bridge Test ===");
+Console.WriteLine("=== Vortex SSPI Test Server ===");
 
-try 
-{
-    var session = new SspiSession();
-    var testMessage = "Hello from C#!";
-    byte[] input = Encoding.UTF8.GetBytes(testMessage);
-
-    Console.WriteLine($"Sending: {testMessage}");
-
-    byte[]? response = session.ProcessToken(input);
-
-    if (response != null)
-    {
-        string result = Encoding.UTF8.GetString(response);
-        Console.WriteLine($"Received from Rust: {result}");
-    }
-    else
-    {
-        Console.WriteLine("Error: Received null response from Rust.");
-    }
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"Critical Failure: {ex.Message}");
-    Console.WriteLine(ex.StackTrace);
-}
-
-Console.WriteLine("===============================");
+// Run IRCd-lite server in background
+var ircdServer = new Vortex.Sspi.Test.LiteIrcdServer();
+var ircTask = ircdServer.RunAsync();
+Console.WriteLine("Press any key to shut down IRCd-lite server...");
+Console.ReadKey();
+ircdServer.RequestShutdown();
+await ircTask;

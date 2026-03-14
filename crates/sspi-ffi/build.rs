@@ -1,9 +1,11 @@
 fn main() {
     // Only rerun this script if the lib.rs file changes
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=../provider-ntlm/src/lib.rs");
 
     csbindgen::Builder::new()
         .input_extern_file("src/lib.rs")
+        .input_extern_file("../provider-ntlm/src/lib.rs")
         .csharp_class_name("NativeMethods")
         .csharp_namespace("Vortex.Sspi")
         .csharp_dll_name("vortex_sspi")

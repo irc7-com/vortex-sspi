@@ -19,28 +19,105 @@ namespace Vortex.Sspi
 
 
         /// <summary>
-        ///  # Safety
-        ///  Caller must ensure that `input_ptr` is valid for `input_len` bytes and points to properly initialized memory.
+        ///  Creates a new NTLM server authentication provider.
+        ///
+        ///  Returns an opaque handle to the provider. The caller must eventually call
+        ///  `ntlm_server_destroy` to free the allocated memory.
         /// </summary>
-        [DllImport(__DllName, EntryPoint = "process_token", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        internal static extern SspiResult process_token(byte* input_ptr, uint input_len);
+        [DllImport(__DllName, EntryPoint = "ntlm_server_create", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern NtlmProvider* ntlm_server_create();
 
         /// <summary>
+        ///  Processes an incoming NTLM token (Type 1 or Type 3) using SSPI.
+        ///
+        ///  # Parameters
+        ///  - `handle`: Opaque provider handle from `ntlm_server_create`.
+        ///  - `input_ptr`: Pointer to the incoming NTLM token bytes.
+        ///  - `input_len`: Length of the incoming token in bytes.
+        ///  - `out_ptr_ptr`: Receives a pointer to the output token data (Type 2 challenge).
+        ///    The caller must NOT free this memory — it is owned by the provider.
+        ///  - `out_len_ptr`: Receives the length of the output token in bytes.
+        ///
+        ///  # Returns
+        ///  - `SEC_I_CONTINUE_NEEDED` (0x00090312): Type 1 processed, Type 2 challenge written.
+        ///  - `SEC_E_OK` (0): Type 3 processed, identity ready for retrieval.
+        ///  - `SEC_E_LOGON_DENIED`: Token rejected by SSPI.
+        ///
         ///  # Safety
-        ///  Caller must ensure that `ptr` and `len` match a previously allocated buffer from this library.
+        ///  Requires `handle` to point to a valid `NtlmProvider` allocated by `ntlm_server_create`.
+        ///  `input_ptr` must point to a valid byte slice of size `input_len`.
+        ///  `out_ptr_ptr` and `out_len_ptr` must safely point to memory where pointers/lengths can be unmarshaled.
         /// </summary>
-        [DllImport(__DllName, EntryPoint = "free_buffer", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        internal static extern void free_buffer(byte* ptr, uint len);
+        [DllImport(__DllName, EntryPoint = "ntlm_server_parse_token", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int ntlm_server_parse_token(NtlmProvider* handle, byte* input_ptr, uint input_len, byte** out_ptr_ptr, uint* out_len_ptr);
+
+        /// <summary>
+        ///  Retrieves the identity extracted from `query_context_names` after a Type 3 message.
+        ///
+        ///  Must be called after `ntlm_server_parse_token` has successfully processed a Type 3 message.
+        ///
+        ///  # Safety
+        ///  Requires `handle` to point to a valid `NtlmProvider`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "ntlm_server_get_identity", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern NtlmIdentity ntlm_server_get_identity(NtlmProvider* handle);
+
+        /// <summary>
+        ///  Verifies the NTLM authentication using a provided 16-byte NT hash.
+        ///
+        ///  Uses `SspiEx::custom_set_auth_identity` to inject the NT hash into the SSPI context,
+        ///  and validates the cryptographic exchange via `complete_auth_token`.
+        ///
+        ///  # Parameters
+        ///  - `handle`: Opaque provider handle.
+        ///  - `hash_ptr`: Pointer to a 16-byte NT hash (MD4 of the user's password).
+        ///
+        ///  # Safety
+        ///  Requires `handle` to point to a valid `NtlmProvider`.
+        ///  `hash_ptr` must be a valid, non-null pointer to at least 16 bytes of data.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "ntlm_server_verify", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int ntlm_server_verify(NtlmProvider* handle, byte* hash_ptr);
+
+        /// <summary>
+        ///  Destroys the NTLM provider and frees all associated memory.
+        ///
+        ///  # Safety
+        ///  Requires `handle` to be a valid pointer returned by `ntlm_server_create`.
+        ///  If `handle` is null, the function does nothing.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "ntlm_server_destroy", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void ntlm_server_destroy(NtlmProvider* handle);
 
 
     }
 
+    /// <summary>
+    ///  Opaque NTLM server authentication provider.
+    ///
+    ///  Manages the sspi `Ntlm` state machine and internal buffers.
+    ///  Created via `ntlm_server_create`, destroyed via `ntlm_server_destroy`.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
-    internal unsafe partial struct SspiResult
+    internal unsafe partial struct NtlmProvider
     {
-        public int status;
-        public byte* out_ptr;
-        public uint out_len;
+    }
+
+    /// <summary>
+    ///  C-compatible struct containing UTF-16 pointers to the extracted NTLM identity.
+    ///
+    ///  All pointers are owned by the `NtlmProvider` and remain valid until `ntlm_server_destroy`
+    ///  is called. The C# consumer should copy the data if it needs to outlive the provider.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe partial struct NtlmIdentity
+    {
+        public ushort* username;
+        public uint username_len;
+        public ushort* domain;
+        public uint domain_len;
+        public ushort* workstation;
+        public uint workstation_len;
     }
 
 
