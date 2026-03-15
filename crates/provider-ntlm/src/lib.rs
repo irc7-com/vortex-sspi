@@ -340,20 +340,34 @@ pub unsafe extern "C" fn ntlm_hash_password(out_hash: *mut u8, password_utf16: *
         len += 1;
     }
 
-    // Convert UTF-16 to Rust String
-    let password_slice = unsafe { slice::from_raw_parts(password_utf16, len) };
-    let password = match String::from_utf16(password_slice) {
-        Ok(s) => s,
-        Err(_) => return SEC_E_INVALID_TOKEN,
-    };
-
     // NTLM hash = MD4(UTF-16LE(PASSWORD))
+    let password_slice = unsafe { slice::from_raw_parts(password_utf16, len) };
     let mut md4 = Md4::new();
-    md4.update(password.as_bytes());
+    for &c in password_slice {
+        md4.update(&c.to_le_bytes());
+    }
     let hash = md4.finalize();
 
     // Write the hash to the output buffer
     unsafe { ptr::copy_nonoverlapping(hash.as_ptr(), out_hash, 16) };
 
     SEC_E_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ntlm_hash_password() {
+        let password: Vec<u16> = "password".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut hash = [0u8; 16];
+        let res = unsafe { ntlm_hash_password(hash.as_mut_ptr(), password.as_ptr()) };
+        assert_eq!(res, SEC_E_OK);
+
+        let expected: [u8; 16] = [
+            0x88, 0x46, 0xF7, 0xEA, 0xEE, 0x8F, 0xB1, 0x17, 0xAD, 0x06, 0xBD, 0xD8, 0x30, 0xB7, 0x58, 0x6C,
+        ];
+        assert_eq!(hash, expected);
+    }
 }
