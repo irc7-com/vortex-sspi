@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Vortex.Sspi;
@@ -84,6 +85,42 @@ public unsafe class SspiSession : IDisposable
         {
             return NativeMethods.ntlm_server_verify(_handle, pHash);
         }
+    }
+
+    /// <summary>
+    /// Computes the NT hash (MD4 of the UTF-16LE encoded password) for a given password string.
+    /// </summary>
+    /// <param name="password">The plaintext password to hash.</param>
+    /// <returns>A 16-byte NT hash of the password.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="password"/> is null.</exception>
+    /// <exception cref="CryptographicException">Thrown if the native hash function returns an error.</exception>
+    public static byte[] NtlmHashPassword(string password)
+    {
+        ArgumentNullException.ThrowIfNull(password);
+
+        // Encode as null-terminated UTF-16LE
+        byte[] utf16Bytes = Encoding.Unicode.GetBytes(password + '\0');
+        byte[] hash = new byte[16];
+
+        try
+        {
+            fixed (byte* pUtf16 = utf16Bytes)
+            fixed (byte* pHash = hash)
+            {
+                int result = NativeMethods.ntlm_hash_password(pHash, (ushort*)pUtf16);
+                if (result != 0)
+                {
+                    throw new CryptographicException($"ntlm_hash_password failed with error code 0x{result:X8}.");
+                }
+            }
+        }
+        finally
+        {
+            // Zero out the UTF-16 bytes to limit exposure of the plaintext password in memory
+            CryptographicOperations.ZeroMemory(utf16Bytes);
+        }
+
+        return hash;
     }
 
     protected virtual void Dispose(bool disposing)
