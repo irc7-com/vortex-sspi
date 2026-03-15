@@ -1,14 +1,19 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#[macro_use]
+pub mod utils;
+pub mod session_manager;
+pub mod gatekeeper_session_manager;
+pub mod passport_session_managers;
+pub mod base_provider;
+pub mod gatekeeper;
+pub mod gatekeeper_passport;
+pub mod ntlm;
+pub mod ntlm_passport;
+pub mod passport;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use base_provider::{BaseProvider, Handle, SecPkgInfoA, SecPkgInfoW, SecurityProvider};
+pub use session_manager::SessionManager;
+pub use gatekeeper::GateKeeperProvider;
+pub use gatekeeper_passport::GateKeeperPassportProvider;
+pub use ntlm::NtlmProvider;
+pub use ntlm_passport::NtlmPassportProvider;
+pub use passport::PassportProvider;

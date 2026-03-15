@@ -4,3 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+parking_lot = "0.12"
+hmac = "0.13.0-rc.3"
+md-5 = "0.11.0-rc.2"
+
+[dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32_Security_Authentication_Identity",
+    "Win32_Foundation",
+]
