@@ -2,11 +2,13 @@ use provider_gatekeeper::base_provider::{
     SEC_E_OK, SEC_I_CONTINUE_NEEDED, SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SecBuffer,
     SecBufferDesc,
 };
-use provider_gatekeeper::{GateKeeperProvider, Handle, SecPkgInfoA, SecPkgInfoW, SecurityProvider};
-use std::ffi::CStr;
+use provider_gatekeeper::{GateKeeperProvider, Handle, SecurityProvider};
 use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
 
-use crate::utils::{print_round_results, wstr_from_ptr};
+use crate::utils::{
+    enumerate_and_print_packages, print_round_results,
+    query_and_print_context_attributes,
+};
 
 /// This binary demonstrates the SSPI handshake process for the GateKeeper provider.
 /// It simulates a client-side authentication flow, including package enumeration
@@ -20,7 +22,7 @@ pub fn main() {
 
     // --- Package Enumeration Phase ---
     // Enumerating packages allows us to discover capabilities and buffer requirements.
-    enumerate_and_print_packages(&mut gk);
+    enumerate_and_print_packages(&gk);
 
     // --- Security Context Handshake (Round 1) ---
     // In the first round, the client provides its identity information (GUID and Hostname)
@@ -157,41 +159,6 @@ pub fn main() {
 
     print_round_results(2, &out_buffers_round2[0], &out_token);
     println!("\nSecurity context successfully established.");
-}
 
-/// Helper to print SSPI package information.
-fn enumerate_and_print_packages(gk: &mut GateKeeperProvider) {
-    let mut pc_packages = 0;
-    let mut pp_pkg_info_a: Vec<SecPkgInfoA> = Vec::new();
-    if gk.enumerate_security_packages_a(&mut pc_packages, &mut pp_pkg_info_a) == SEC_E_OK {
-        println!("Enumerated {} package(s) (ANSI):", pc_packages);
-        for pkg in &pp_pkg_info_a {
-            unsafe {
-                let name = CStr::from_ptr(pkg.Name as *const i8).to_string_lossy();
-                let comment = CStr::from_ptr(pkg.Comment as *const i8).to_string_lossy();
-                println!("  - [{}] {}", name, comment);
-                println!(
-                    "    Capabilities: {:#x}, MaxToken: {}",
-                    pkg.fCapabilities, pkg.cbMaxToken
-                );
-            }
-        }
-    }
-
-    let mut pc_packages_w = 0;
-    let mut pp_pkg_info_w: Vec<SecPkgInfoW> = Vec::new();
-    if gk.enumerate_security_packages_w(&mut pc_packages_w, &mut pp_pkg_info_w) == SEC_E_OK {
-        println!("\nEnumerated {} package(s) (Wide):", pc_packages_w);
-        for pkg in &pp_pkg_info_w {
-            unsafe {
-                let name = wstr_from_ptr(pkg.Name as *const u16);
-                let comment = wstr_from_ptr(pkg.Comment as *const u16);
-                println!("  - [{}] {}", name, comment);
-                println!(
-                    "    Capabilities: {:#x}, MaxToken: {}",
-                    pkg.fCapabilities, pkg.cbMaxToken
-                );
-            }
-        }
-    }
+    query_and_print_context_attributes(&gk, &h_context_round1);
 }

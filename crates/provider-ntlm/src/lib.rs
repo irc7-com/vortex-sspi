@@ -344,7 +344,7 @@ pub unsafe extern "C" fn ntlm_hash_password(out_hash: *mut u8, password_utf16: *
     let password_slice = unsafe { slice::from_raw_parts(password_utf16, len) };
     let mut md4 = Md4::new();
     for &c in password_slice {
-        md4.update(&c.to_le_bytes());
+        md4.update(c.to_le_bytes());
     }
     let hash = md4.finalize();
 

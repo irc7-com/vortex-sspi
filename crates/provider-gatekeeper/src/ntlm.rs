@@ -11,6 +11,12 @@ pub struct NtlmProvider {
     pub security_interface: usize,
 }
 
+impl Default for NtlmProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NtlmProvider {
     pub fn new() -> Self {
         Self {

@@ -1,4 +1,8 @@
-use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
+use windows_sys::Win32::Security::Authentication::Identity::{
+    SECPKG_ATTR_LIFESPAN, SECPKG_ATTR_NAMES, SECPKG_ATTR_PROTO_INFO, SECPKG_ATTR_SIZES,
+    SECURITY_NATIVE_DREP, SecPkgContext_Lifespan, SecPkgContext_NamesA, SecPkgContext_NamesW,
+    SecPkgContext_ProtoInfoA, SecPkgContext_ProtoInfoW, SecPkgContext_Sizes,
+};
 
 use crate::base_provider::{
     BaseProvider, Handle, SEC_E_OK, SecPkgInfoA, SecPkgInfoW, SecurityProvider, SecurityStatus,
@@ -9,6 +13,12 @@ use crate::gatekeeper_session_manager::GateKeeperSessionManager;
 /// Equivalent to CGateKeeperProvider C++ class.
 pub struct GateKeeperProvider {
     pub base: BaseProvider,
+}
+
+impl Default for GateKeeperProvider {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GateKeeperProvider {
@@ -112,11 +122,10 @@ impl SecurityProvider for GateKeeperProvider {
 
             if let (Some(pb0), Some(pb1)) = (pkg_buffer0, pkg_buffer1) {
                 let mut sm_lock = self.base.session_manager.lock();
-                if let Some(ref mut sm) = *sm_lock {
-                    if let Some(handle) = sm.create_context() {
-                        if let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
-                        {
-                            if let Some(session_arc) = gk_sm.get_session(&handle) {
+                if let Some(ref mut sm) = *sm_lock
+                    && let Some(handle) = sm.create_context()
+                        && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
+                            && let Some(session_arc) = gk_sm.get_session(&handle) {
                                 let mut session = session_arc.lock();
 
                                 unsafe {
@@ -124,7 +133,7 @@ impl SecurityProvider for GateKeeperProvider {
                                     let p_guid = (*pb0).pvBuffer as *const u8;
                                     ptr::copy_nonoverlapping(
                                         p_guid,
-                                        session.gatekeeper_id.as_mut_ptr(),
+                                        &mut session.gatekeeper_id as *mut _ as *mut u8,
                                         16,
                                     );
 
@@ -144,7 +153,7 @@ impl SecurityProvider for GateKeeperProvider {
                                     let p_out = (*output_token).pvBuffer as *mut u32;
                                     ptr::write_bytes(p_out, 0, 4); // Clear buffer
                                     ptr::copy_nonoverlapping(
-                                        "GKSSP\0\0\0".as_ptr(),
+                                        b"GKSSP\0\0\0".as_ptr(),
                                         p_out as *mut u8,
                                         8,
                                     );
@@ -157,17 +166,14 @@ impl SecurityProvider for GateKeeperProvider {
                                 *ph_new_context = handle;
                                 return SEC_I_CONTINUE_NEEDED;
                             }
-                        }
-                    }
-                }
             }
-            return SEC_E_INVALID_TOKEN;
+            SEC_E_INVALID_TOKEN
         } else {
             // --- Step 2 & 3 ---
             let sm_lock = self.base.session_manager.lock();
-            if let Some(ref sm) = *sm_lock {
-                if let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>() {
-                    if let Some(session_arc) = gk_sm.get_session(ph_context) {
+            if let Some(ref sm) = *sm_lock
+                && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
+                    && let Some(session_arc) = gk_sm.get_session(ph_context) {
                         let mut session = session_arc.lock();
 
                         // 1. Process Input Token (Step 2)
@@ -234,7 +240,7 @@ impl SecurityProvider for GateKeeperProvider {
                             // Token layout (48 bytes): "GKSSP\0\0\0" (8) | Version (4) | Step (4) | HMAC (16) | GateKeeperID (16)
                             let p_out = (*output_token).pvBuffer as *mut u32;
                             ptr::write_bytes(p_out, 0, 12);
-                            ptr::copy_nonoverlapping("GKSSP\0\0\0".as_ptr(), p_out as *mut u8, 8);
+                            ptr::copy_nonoverlapping(b"GKSSP\0\0\0".as_ptr(), p_out as *mut u8, 8);
                             *p_out.add(2) = 3; // Version
                             *p_out.add(3) = 3; // Step 3
                             ptr::copy_nonoverlapping(
@@ -243,7 +249,7 @@ impl SecurityProvider for GateKeeperProvider {
                                 16,
                             );
                             ptr::copy_nonoverlapping(
-                                session.gatekeeper_id.as_ptr(),
+                                &session.gatekeeper_id as *const _ as *const u8,
                                 p_out.add(8) as *mut u8,
                                 16,
                             );
@@ -252,19 +258,197 @@ impl SecurityProvider for GateKeeperProvider {
 
                         return SEC_E_OK;
                     }
-                }
-            }
-            return SEC_E_INVALID_HANDLE;
+            SEC_E_INVALID_HANDLE
         }
     }
 
     fn query_context_attributes_a(
         &self,
-        _ph_context: &Handle,
-        _ul_attribute: u32,
-        _p_buffer: usize,
+        ph_context: &Handle,
+        ul_attribute: u32,
+        p_buffer: usize,
     ) -> SecurityStatus {
-        SEC_E_OK
+        use crate::base_provider::{
+            SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INVALID_HANDLE,
+            SEC_E_OK, SEC_E_UNSUPPORTED_FUNCTION,
+        };
+        use crate::gatekeeper_session_manager::GateKeeperSessionManager;
+
+        if p_buffer == 0 {
+            return SEC_E_UNSUPPORTED_FUNCTION;
+        }
+
+        let sm_lock = self.base.session_manager.lock();
+        let session_arc = if let Some(ref sm) = *sm_lock {
+            if let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>() {
+                gk_sm.get_session(ph_context)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let s_arc = match session_arc {
+            Some(arc) => arc,
+            None => return SEC_E_INVALID_HANDLE,
+        };
+
+        let session = s_arc.lock();
+
+        unsafe {
+            match ul_attribute {
+                SECPKG_ATTR_SIZES => {
+                    let out = p_buffer as *mut SecPkgContext_Sizes;
+                    (*out).cbMaxToken = self.base.max_token_size;
+                    (*out).cbMaxSignature = 0;
+                    (*out).cbBlockSize = 0;
+                    (*out).cbSecurityTrailer = 0;
+                    SEC_E_OK
+                }
+                SECPKG_ATTR_NAMES => {
+                    use std::io::Write;
+
+                    // Allocate 33 bytes for the string using Rust's standard allocator
+                    let alloc_ptr = Box::into_raw(Box::new([0u8; 33])) as *mut u8;
+
+                    let id = session.gatekeeper_id;
+
+                    let mut buf =
+                        std::io::Cursor::new(std::slice::from_raw_parts_mut(alloc_ptr, 33));
+                    write!(buf, "{:08X}{:04X}{:04X}", id.data1, id.data2, id.data3).unwrap();
+                    for &b in &id.data4 {
+                        write!(buf, "{:02X}", b).unwrap();
+                    }
+                    *alloc_ptr.add(32) = 0;
+
+                    let out = p_buffer as *mut SecPkgContext_NamesA;
+                    (*out).sUserName = alloc_ptr as *mut i8;
+
+                    if id.data1 == 0
+                        && id.data2 == 0
+                        && id.data3 == 0
+                        && id.data4.iter().all(|&b| b == 0)
+                    {
+                        return SEC_E_INCOMPLETE_CREDENTIALS;
+                    }
+                    SEC_E_OK
+                }
+                SECPKG_ATTR_LIFESPAN => {
+                    let out = p_buffer as *mut SecPkgContext_Lifespan;
+                    (*out).tsStart = 0i64;
+                    (*out).tsExpiry = i64::MAX;
+                    SEC_E_OK
+                }
+                SECPKG_ATTR_PROTO_INFO => {
+                    let out = p_buffer as *mut SecPkgContext_ProtoInfoA;
+                    (*out).sProtocolName = std::ptr::null_mut();
+                    (*out).majorVersion = session.version_flag as u32;
+                    (*out).minorVersion = 0;
+                    SEC_E_OK
+                }
+                _ => SEC_E_UNSUPPORTED_FUNCTION,
+            }
+        }
+    }
+
+    fn query_context_attributes_w(
+        &self,
+        ph_context: &Handle,
+        ul_attribute: u32,
+        p_buffer: usize,
+    ) -> SecurityStatus {
+        use crate::base_provider::{
+            SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INVALID_HANDLE,
+            SEC_E_OK, SEC_E_UNSUPPORTED_FUNCTION,
+        };
+        use crate::gatekeeper_session_manager::GateKeeperSessionManager;
+
+        if p_buffer == 0 {
+            return SEC_E_UNSUPPORTED_FUNCTION;
+        }
+
+        let sm_lock = self.base.session_manager.lock();
+        let session_arc = if let Some(ref sm) = *sm_lock {
+            if let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>() {
+                gk_sm.get_session(ph_context)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let s_arc = match session_arc {
+            Some(arc) => arc,
+            None => return SEC_E_INVALID_HANDLE,
+        };
+
+        let session = s_arc.lock();
+
+        unsafe {
+            match ul_attribute {
+                SECPKG_ATTR_SIZES => {
+                    let out = p_buffer as *mut SecPkgContext_Sizes;
+                    (*out).cbMaxToken = self.base.max_token_size;
+                    (*out).cbMaxSignature = 0;
+                    (*out).cbBlockSize = 0;
+                    (*out).cbSecurityTrailer = 0;
+                    SEC_E_OK
+                }
+                SECPKG_ATTR_NAMES => {
+                    // SECPKG_ATTR_NAMES (Wide)
+                    let alloc_ptr = Box::into_raw(Box::new([0u16; 33])) as *mut u16;
+
+                    let id = session.gatekeeper_id;
+                    let formatted_str = format!(
+                        "{:08X}{:04X}{:04X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+                        id.data1,
+                        id.data2,
+                        id.data3,
+                        id.data4[0],
+                        id.data4[1],
+                        id.data4[2],
+                        id.data4[3],
+                        id.data4[4],
+                        id.data4[5],
+                        id.data4[6],
+                        id.data4[7]
+                    );
+
+                    for (i, c) in formatted_str.encode_utf16().enumerate() {
+                        *alloc_ptr.add(i) = c;
+                    }
+                    *alloc_ptr.add(32) = 0; // Null terminator
+
+                    let out = p_buffer as *mut SecPkgContext_NamesW;
+                    (*out).sUserName = alloc_ptr;
+
+                    if id.data1 == 0
+                        && id.data2 == 0
+                        && id.data3 == 0
+                        && id.data4.iter().all(|&b| b == 0)
+                    {
+                        return SEC_E_INCOMPLETE_CREDENTIALS;
+                    }
+                    SEC_E_OK
+                }
+                SECPKG_ATTR_LIFESPAN => {
+                    let out = p_buffer as *mut SecPkgContext_Lifespan;
+                    (*out).tsStart = 0i64;
+                    (*out).tsExpiry = i64::MAX;
+                    SEC_E_OK
+                }
+                SECPKG_ATTR_PROTO_INFO => {
+                    let out = p_buffer as *mut SecPkgContext_ProtoInfoW;
+                    (*out).sProtocolName = std::ptr::null_mut();
+                    (*out).majorVersion = session.version_flag as u32;
+                    (*out).minorVersion = 0;
+                    SEC_E_OK
+                }
+                _ => SEC_E_UNSUPPORTED_FUNCTION,
+            }
+        }
     }
 
     // Default delegation to base for common methods

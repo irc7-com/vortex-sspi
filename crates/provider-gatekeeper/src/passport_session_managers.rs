@@ -59,6 +59,12 @@ pub struct PassportSessionManagerInner {
     pub next_handle: u32,
 }
 
+impl Default for PassportSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PassportSessionManager {
     pub fn new() -> Self {
         Self {
@@ -143,6 +149,12 @@ pub struct NtlmPassportSessionManagerInner {
     pub next_handle: u32,
 }
 
+impl Default for NtlmPassportSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NtlmPassportSessionManager {
     pub fn new() -> Self {
         Self {
@@ -206,6 +218,12 @@ pub struct GateKeeperPassportSessionManager {
 pub struct GateKeeperPassportSessionManagerInner {
     pub sessions: HashMap<Handle, Arc<Mutex<GateKeeperPassportSession>>>,
     pub next_handle: u32,
+}
+
+impl Default for GateKeeperPassportSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GateKeeperPassportSessionManager {

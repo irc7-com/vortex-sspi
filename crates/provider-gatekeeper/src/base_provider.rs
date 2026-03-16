@@ -3,9 +3,9 @@ use std::ffi::CString;
 use std::sync::Arc;
 pub use windows_sys::Win32::{
     Foundation::{
-        SEC_E_INSUFFICIENT_MEMORY, SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN, SEC_E_NOT_SUPPORTED,
-        SEC_E_OK, SEC_E_TARGET_UNKNOWN, SEC_E_UNKNOWN_CREDENTIALS, SEC_E_UNSUPPORTED_FUNCTION,
-        SEC_I_CONTINUE_NEEDED,
+        SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INSUFFICIENT_MEMORY, SEC_E_INVALID_HANDLE,
+        SEC_E_INVALID_TOKEN, SEC_E_NOT_SUPPORTED, SEC_E_OK, SEC_E_TARGET_UNKNOWN,
+        SEC_E_UNKNOWN_CREDENTIALS, SEC_E_UNSUPPORTED_FUNCTION, SEC_I_CONTINUE_NEEDED,
     },
     Security::Authentication::Identity::{
         SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SecBuffer, SecBufferDesc, SecPkgInfoA, SecPkgInfoW,
@@ -278,6 +278,12 @@ pub struct BaseProvider {
 unsafe impl Send for BaseProvider {}
 unsafe impl Sync for BaseProvider {}
 
+impl Default for BaseProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BaseProvider {
     pub fn new() -> Self {
         let empty_a = CString::new("").unwrap();
@@ -441,7 +447,16 @@ impl SecurityProvider for BaseProvider {
         SEC_E_OK
     }
 
-    fn free_context_buffer(&self, _: usize) -> SecurityStatus {
+    fn free_context_buffer(&self, pv_context_buffer: usize) -> SecurityStatus {
+        if pv_context_buffer != 0 {
+            unsafe {
+                // If query_context_attributes allocates memory using Box/Vec into_raw,
+                // we reconstruct the Box here so it gets safely dropped.
+                // Note: For dynamically sized arrays like SECPKG_ATTR_NAMES, we
+                // assumed it was allocated as a layout of [u8].
+                let _ = Box::from_raw(pv_context_buffer as *mut [u8; 33]);
+            }
+        }
         SEC_E_OK
     }
 

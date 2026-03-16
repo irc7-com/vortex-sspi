@@ -19,6 +19,12 @@ pub struct GateKeeperPassportProvider {
     pub gatekeeper_creds: Handle,
 }
 
+impl Default for GateKeeperPassportProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GateKeeperPassportProvider {
     pub fn new() -> Self {
         Self {
@@ -91,9 +97,9 @@ impl SecurityProvider for GateKeeperPassportProvider {
 
     fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
         let sm_lock = self.base.session_manager.lock();
-        if let Some(sm) = sm_lock.as_ref() {
-            if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
-                if let Some(session_arc) = gk_p_sm.get_session(h) {
+        if let Some(sm) = sm_lock.as_ref()
+            && let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+                && let Some(session_arc) = gk_p_sm.get_session(h) {
                     let session = session_arc.lock();
                     if session.sub_contexts[0].lower != 0 || session.sub_contexts[0].upper != 0 {
                         self.gatekeeper.delete_security_context(&session.sub_contexts[0]);
@@ -102,8 +108,6 @@ impl SecurityProvider for GateKeeperPassportProvider {
                         self.passport.delete_security_context(&session.sub_contexts[1]);
                     }
                 }
-            }
-        }
         self.base.delete_security_context(h)
     }
 

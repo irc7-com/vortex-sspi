@@ -17,6 +17,12 @@ pub struct NtlmPassportProvider {
     pub passport_creds: Handle,
 }
 
+impl Default for NtlmPassportProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NtlmPassportProvider {
     pub fn new() -> Self {
         Self {
@@ -83,9 +89,9 @@ impl SecurityProvider for NtlmPassportProvider {
 
     fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
         let sm_lock = self.base.session_manager.lock();
-        if let Some(sm) = sm_lock.as_ref() {
-            if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>() {
-                if let Some(session_arc) = ntlm_p_sm.get_session(h) {
+        if let Some(sm) = sm_lock.as_ref()
+            && let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
+                && let Some(session_arc) = ntlm_p_sm.get_session(h) {
                     let session = session_arc.lock();
                     if session.sub_contexts[0].lower != 0 || session.sub_contexts[0].upper != 0 {
                         self.ntlm.delete_security_context(&session.sub_contexts[0]);
@@ -95,8 +101,6 @@ impl SecurityProvider for NtlmPassportProvider {
                             .delete_security_context(&session.sub_contexts[1]);
                     }
                 }
-            }
-        }
         self.passport.delete_security_context(h)
     }
 

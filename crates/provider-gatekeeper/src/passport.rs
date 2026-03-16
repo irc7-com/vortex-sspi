@@ -13,6 +13,12 @@ pub struct PassportProvider {
     pub base: BaseProvider,
 }
 
+impl Default for PassportProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PassportProvider {
     pub fn new() -> Self {
         Self {

@@ -4,6 +4,7 @@ use parking_lot::{Mutex, ReentrantMutex};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use windows_sys::core::GUID;
 
 /// Equivalent to CGateKeeperSession C++ class.
 /// Size: 120 bytes (0x78)
@@ -17,7 +18,7 @@ pub struct GateKeeperSession {
     /// Offset 0x2B: HMAC result (16 bytes)
     pub hmac_result: [u8; 16],
     /// Offset 0x3C: GateKeeperID (GUID/16 bytes)
-    pub gatekeeper_id: [u8; 16],
+    pub gatekeeper_id: GUID,
     /// Offset 0x4C: szHostname (16 bytes, ANSI, max 15 chars)
     pub hostname: [u8; 16],
     /// Offset 0x5C: cbHostname (Actual length)
@@ -41,7 +42,7 @@ impl GateKeeperSession {
             flags: 0,
             server_nonce: [0; 8],
             hmac_result: [0; 16],
-            gatekeeper_id: [0; 16],
+            gatekeeper_id: GUID { data1: 0, data2: 0, data3: 0, data4: [0; 8] },
             hostname: [0; 16],
             hostname_len: 0,
             hmac_key: [
@@ -68,6 +69,12 @@ pub struct GateKeeperSessionManager {
 
     /// Internal storage for sessions (mirrors the pool of 8 slots in C++)
     pub sessions: HashMap<u32, Arc<Mutex<GateKeeperSession>>>,
+}
+
+impl Default for GateKeeperSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GateKeeperSessionManager {
