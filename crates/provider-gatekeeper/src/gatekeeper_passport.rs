@@ -45,7 +45,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
             w!("GateKeeperPassport"),
             w!("GateKeeperPassport Security Package"),
         );
-        self.base.initialize()
+        BaseProvider::initialize(self)
     }
 
     fn shutdown(&self) {}
@@ -187,15 +187,16 @@ impl SecurityProvider for GateKeeperPassportProvider {
                     }
                 }
 
-                let pkg_params = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 0) };
-                if let Some(pb1) = pkg_params {
+                let p_guid = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 0) };
+                let p_host = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 1) };
+
+                if let (Some(pb0), Some(pb1)) = (p_guid, p_host) {
                     // Setup internal parameters for GateKeeper
-                    let mut guid_buf = [0u8; 16];
                     let mut gk_params = [
                         SecBuffer {
-                            cbBuffer: 16,
+                            cbBuffer: unsafe { (*pb0).cbBuffer },
                             BufferType: SECBUFFER_PKG_PARAMS,
-                            pvBuffer: guid_buf.as_mut_ptr() as *mut _,
+                            pvBuffer: unsafe { (*pb0).pvBuffer },
                         },
                         SecBuffer {
                             cbBuffer: unsafe { (*pb1).cbBuffer },

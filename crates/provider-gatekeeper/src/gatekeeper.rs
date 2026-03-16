@@ -33,7 +33,7 @@ impl SecurityProvider for GateKeeperProvider {
             w!("GateKeeper"),
             w!("GateKeeper Security Package"),
         );
-        self.base.initialize()
+        BaseProvider::initialize(self)
     }
 
     fn create_session_manager(&self) -> Option<Box<dyn SessionManager>> {

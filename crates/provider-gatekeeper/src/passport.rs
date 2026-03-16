@@ -1,10 +1,12 @@
 use crate::base_provider::{
-    find_sec_buffer, BaseProvider, Handle, SECBUFFER_TOKEN, SEC_E_OK, SecurityProvider,
-    SecurityStatus, SessionManager,
+    BaseProvider, Handle, SEC_E_OK, SECBUFFER_TOKEN, SecurityProvider, SecurityStatus,
+    SessionManager, find_sec_buffer,
 };
 use crate::passport_session_managers::PassportSessionManager;
 use std::ptr;
-use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
+use windows_sys::Win32::Security::Authentication::Identity::{
+    SECURITY_NATIVE_DREP, SecPkgInfoA, SecPkgInfoW,
+};
 
 /// Equivalent to CPassportProvider C++ class.
 pub struct PassportProvider {
@@ -33,7 +35,7 @@ impl SecurityProvider for PassportProvider {
             w!("Passport"),
             w!("Passport Security Package"),
         );
-        self.base.initialize()
+        BaseProvider::initialize(self)
     }
 
     fn shutdown(&self) {}

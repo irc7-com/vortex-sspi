@@ -332,6 +332,23 @@ impl BaseProvider {
             Comment: self._comment_w.as_ptr() as *mut u16,
         };
     }
+
+    pub fn initialize(provider: &mut dyn SecurityProvider) -> bool {
+        let mut session_manager = provider.create_session_manager();
+        let base = provider.base();
+        if let Some(ref mut sm) = session_manager {
+            if !sm.init() {
+                sm.shutdown();
+                *base.session_manager.lock() = None;
+                return false;
+            }
+            *base.session_manager.lock() = session_manager;
+        } else {
+            *base.session_manager.lock() = None;
+            return false;
+        }
+        true
+    }
 }
 
 /// Implementation of the base class methods as seen in IDA.
@@ -342,21 +359,7 @@ impl SecurityProvider for BaseProvider {
     /// CSecurityProvider::Initialize — calls CreateSessionManager via vtable,
     /// initializes it via SessionManager::init(), stores or clears on failure.
     fn initialize(&mut self) -> bool {
-        let mut session_manager = self.create_session_manager();
-        if let Some(ref mut sm) = session_manager {
-            if !sm.init() {
-                // CSessionManager_Init failed — call Shutdown(1) and clear
-                sm.shutdown();
-                *self.session_manager.lock() = None;
-                return false;
-            }
-            *self.session_manager.lock() = session_manager;
-        } else {
-            // CreateSessionManager returned null
-            *self.session_manager.lock() = None;
-            return false;
-        }
-        true
+        BaseProvider::initialize(self)
     }
     fn shutdown(&self) {}
     fn create_session_manager(&self) -> Option<Box<dyn SessionManager>> {

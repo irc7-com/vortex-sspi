@@ -1,6 +1,6 @@
 use crate::base_provider::Handle;
 use crate::session_manager::SessionManager;
-use parking_lot::{Mutex, ReentrantMutex};
+use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;

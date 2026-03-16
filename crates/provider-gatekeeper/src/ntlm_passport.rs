@@ -4,7 +4,7 @@ use crate::base_provider::{
 };
 use crate::ntlm::NtlmProvider;
 use crate::passport::PassportProvider;
-use crate::passport_session_managers::{NtlmPassportSession, NtlmPassportSessionManager};
+use crate::passport_session_managers::NtlmPassportSessionManager;
 use std::ptr;
 use std::sync::Arc;
 use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
@@ -42,7 +42,7 @@ impl SecurityProvider for NtlmPassportProvider {
             w!("NTLMPassport"),
             w!("NTLMPassport Security Package"),
         );
-        self.base.initialize()
+        BaseProvider::initialize(self)
     }
 
     fn shutdown(&self) {}
@@ -239,7 +239,7 @@ impl SecurityProvider for NtlmPassportProvider {
                         BufferType: SECBUFFER_TOKEN,
                         pvBuffer: session.saved_token.as_mut_ptr() as *mut _,
                     }];
-                    let mut p_desc = SecBufferDesc {
+                    let p_desc = SecBufferDesc {
                         ulVersion: 0,
                         cBuffers: 1,
                         pBuffers: p_params.as_mut_ptr(),
