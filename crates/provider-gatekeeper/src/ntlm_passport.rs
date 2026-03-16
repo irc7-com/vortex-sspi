@@ -18,11 +18,11 @@ pub struct NtlmPassportProvider {
 }
 
 impl NtlmPassportProvider {
-    pub fn new(passport: Arc<PassportProvider>, ntlm: Arc<NtlmProvider>) -> Self {
+    pub fn new() -> Self {
         Self {
             base: BaseProvider::new(),
-            passport,
-            ntlm,
+            passport: Arc::new(PassportProvider::new()),
+            ntlm: Arc::new(NtlmProvider::new()),
             passport_creds: Handle::default(),
         }
     }

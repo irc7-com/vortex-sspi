@@ -20,11 +20,11 @@ pub struct GateKeeperPassportProvider {
 }
 
 impl GateKeeperPassportProvider {
-    pub fn new(passport: Arc<PassportProvider>, gatekeeper: Arc<GateKeeperProvider>) -> Self {
+    pub fn new() -> Self {
         Self {
             base: BaseProvider::new(),
-            passport,
-            gatekeeper,
+            passport: Arc::new(PassportProvider::new()),
+            gatekeeper: Arc::new(GateKeeperProvider::new()),
             passport_creds: Handle::default(),
             gatekeeper_creds: Handle::default(),
         }
@@ -38,17 +38,38 @@ impl SecurityProvider for GateKeeperPassportProvider {
 
     fn initialize(&mut self) -> bool {
         self.base.init_package_info(
-            52,
-            1024,
+            0x34,
+            0x400,
             "GateKeeperPassport",
             "GateKeeperPassport Security Package",
             w!("GateKeeperPassport"),
             w!("GateKeeperPassport Security Package"),
         );
+
+        // Match sub_3723D36D: Initialize sub-providers and acquire their credentials
+        let mut passport = PassportProvider::new();
+        if !passport.initialize() {
+            return false;
+        }
+        passport.acquire_credentials_handle_a("", "Passport", 1, 0, 0, 0, 0, &mut self.passport_creds, 0);
+        self.passport = Arc::new(passport);
+
+        let mut gatekeeper = GateKeeperProvider::new();
+        if !gatekeeper.initialize() {
+            return false;
+        }
+        gatekeeper.acquire_credentials_handle_a("", "GateKeeper", 1, 0, 0, 0, 0, &mut self.gatekeeper_creds, 0);
+        self.gatekeeper = Arc::new(gatekeeper);
+
         BaseProvider::initialize(self)
     }
 
-    fn shutdown(&self) {}
+    fn shutdown(&self) {
+        self.gatekeeper.shutdown();
+        self.passport.shutdown();
+        self.base.shutdown();
+    }
+
     fn create_session_manager(&self) -> Option<Box<dyn SessionManager>> {
         Some(Box::new(GateKeeperPassportSessionManager::new()))
     }
@@ -69,25 +90,21 @@ impl SecurityProvider for GateKeeperPassportProvider {
     }
 
     fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
-        // First try to find if it's one of our hybrid sessions
         let sm_lock = self.base.session_manager.lock();
         if let Some(sm) = sm_lock.as_ref() {
             if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
                 if let Some(session_arc) = gk_p_sm.get_session(h) {
                     let session = session_arc.lock();
-                    // Delete sub-contexts if they exist
                     if session.sub_contexts[0].lower != 0 || session.sub_contexts[0].upper != 0 {
                         self.gatekeeper.delete_security_context(&session.sub_contexts[0]);
                     }
                     if session.sub_contexts[1].lower != 0 || session.sub_contexts[1].upper != 0 {
                         self.passport.delete_security_context(&session.sub_contexts[1]);
                     }
-                    // The hybrid session itself will be removed from the manager when dropped if we implement that, 
-                    // or we manually remove it here if needed.
                 }
             }
         }
-        self.passport.delete_security_context(h)
+        self.base.delete_security_context(h)
     }
 
     fn initialize_security_context_a(
@@ -116,6 +133,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
         if !psz_target_name.is_empty() {
             return SEC_E_TARGET_UNKNOWN;
         }
+        // IDA: TargetDataRep must be 16 (0x10)
         if target_data_rep != SECURITY_NATIVE_DREP {
             return SEC_E_UNSUPPORTED_FUNCTION;
         }
@@ -175,7 +193,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
 
         match state {
             160 => {
-                // InitializeSecurityContextA Step 1
+                // InitializeSecurityContextA Step 1: Save User TOKEN and call GateKeeper
                 unsafe {
                     let cb = (*input_token).cbBuffer as usize;
                     let pv = (*input_token).pvBuffer as *const u8;
@@ -187,21 +205,21 @@ impl SecurityProvider for GateKeeperPassportProvider {
                     }
                 }
 
-                let p_guid = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 0) };
-                let p_host = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 1) };
-
-                if let (Some(pb0), Some(pb1)) = (p_guid, p_host) {
-                    // Setup internal parameters for GateKeeper
+                // Match IDA: Expect exactly ONE PKG_PARAMS in Step 1
+                let pkg_buffer_opt = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 0) };
+                if let Some(user_pkg) = pkg_buffer_opt {
+                    // Forward to GateKeeper with: 16 bytes of zeros + User's PKG_PARAMS
+                    let mut zeros = [0u8; 16];
                     let mut gk_params = [
                         SecBuffer {
-                            cbBuffer: unsafe { (*pb0).cbBuffer },
+                            cbBuffer: 16,
                             BufferType: SECBUFFER_PKG_PARAMS,
-                            pvBuffer: unsafe { (*pb0).pvBuffer },
+                            pvBuffer: zeros.as_mut_ptr() as *mut _,
                         },
                         SecBuffer {
-                            cbBuffer: unsafe { (*pb1).cbBuffer },
+                            cbBuffer: unsafe { (*user_pkg).cbBuffer },
                             BufferType: SECBUFFER_PKG_PARAMS,
-                            pvBuffer: unsafe { (*pb1).pvBuffer },
+                            pvBuffer: unsafe { (*user_pkg).pvBuffer },
                         },
                     ];
                     let gk_desc = SecBufferDesc {
@@ -235,7 +253,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
                 }
             }
             161 => {
-                // Check if server responded with "OK"
+                // Step 2: Check for "OK" to switch to Passport
                 let is_ok = unsafe {
                     let cb = (*input_token).cbBuffer;
                     let pv = (*input_token).pvBuffer as *const u8;
@@ -243,7 +261,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
                 };
 
                 if is_ok {
-                    // Switch to Passport
+                    // Switch to Passport using the SAVED token from Step 1
                     let mut p_params = [SecBuffer {
                         cbBuffer: session.saved_token.len() as u32,
                         BufferType: SECBUFFER_TOKEN,
@@ -295,7 +313,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
                 }
             }
             163 => {
-                // Continue Passport
+                // Step 3: Continue Passport
                 let context_handle = session.sub_contexts[1];
                 self.passport.initialize_security_context_a(
                     &self.passport_creds,
@@ -312,7 +330,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
                     pts_expiry,
                 )
             }
-            _ => pts_expiry as i32, // Should not happen, matching IDA default
+            _ => pts_expiry as i32,
         }
     }
 
