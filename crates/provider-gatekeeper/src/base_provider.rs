@@ -166,20 +166,37 @@ pub trait SecurityProvider: Send + Sync {
 
     fn initialize_security_context_w(
         &self,
-        _ph_credential: &Handle,
-        _ph_context: &Handle,
-        _psz_target_name: &str,
-        _f_context_req: u32,
-        _reserved1: u32,
-        _target_data_rep: u32,
-        _p_input: usize,
-        _reserved2: u32,
-        _ph_new_context: &mut Handle,
-        _p_output: usize,
-        _pf_context_attr: &mut u32,
-        _pts_expiry: usize,
+        ph_credential: &Handle,
+        ph_context: &Handle,
+        psz_target_name: &str,
+        f_context_req: u32,
+        reserved1: u32,
+        target_data_rep: u32,
+        p_input: usize,
+        reserved2: u32,
+        ph_new_context: &mut Handle,
+        p_output: usize,
+        pf_context_attr: &mut u32,
+        pts_expiry: usize,
     ) -> SecurityStatus {
-        SEC_E_UNSUPPORTED_FUNCTION
+        if !psz_target_name.is_empty() {
+            SEC_E_TARGET_UNKNOWN
+        } else {
+            self.initialize_security_context_a(
+                ph_credential,
+                ph_context,
+                "",
+                f_context_req,
+                reserved1,
+                target_data_rep,
+                p_input,
+                reserved2,
+                ph_new_context,
+                p_output,
+                pf_context_attr,
+                pts_expiry,
+            )
+        }
     }
 
     fn make_signature(
@@ -429,24 +446,6 @@ impl SecurityProvider for BaseProvider {
     }
 
     fn free_credentials_handle(&self, _: &Handle) -> SecurityStatus {
-        SEC_E_OK
-    }
-
-    fn initialize_security_context_w(
-        &self,
-        _: &Handle,
-        _: &Handle,
-        _: &str,
-        _: u32,
-        _: u32,
-        _: u32,
-        _: usize,
-        _: u32,
-        _: &mut Handle,
-        _: usize,
-        _: &mut u32,
-        _: usize,
-    ) -> SecurityStatus {
         SEC_E_OK
     }
 

@@ -46,7 +46,7 @@ impl GateKeeperSession {
             hostname_len: 0,
             hmac_key: [
                 0x53, 0x52, 0x46, 0x4D, 0x4B, 0x53, 0x4A, 0x41, 0x4E, 0x44, 0x52, 0x45, 0x53, 0x4B,
-                0x4B, 0x43,
+                0x4B, 0x43, // Translates to the ASCII string "SRFMKSJANDRESKKC"
             ],
             version_flag: 0,
         }

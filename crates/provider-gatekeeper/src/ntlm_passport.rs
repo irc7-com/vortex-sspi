@@ -1,6 +1,6 @@
 use crate::base_provider::{
-    find_sec_buffer, BaseProvider, Handle, SECBUFFER_TOKEN, SEC_E_OK, SecBuffer, SecBufferDesc,
-    SecPkgInfoA, SecPkgInfoW, SecurityProvider, SecurityStatus, SessionManager,
+    BaseProvider, Handle, SEC_E_OK, SECBUFFER_TOKEN, SecBuffer, SecBufferDesc, SecPkgInfoA,
+    SecPkgInfoW, SecurityProvider, SecurityStatus, SessionManager, find_sec_buffer,
 };
 use crate::ntlm::NtlmProvider;
 use crate::passport::PassportProvider;
@@ -91,7 +91,8 @@ impl SecurityProvider for NtlmPassportProvider {
                         self.ntlm.delete_security_context(&session.sub_contexts[0]);
                     }
                     if session.sub_contexts[1].lower != 0 || session.sub_contexts[1].upper != 0 {
-                        self.passport.delete_security_context(&session.sub_contexts[1]);
+                        self.passport
+                            .delete_security_context(&session.sub_contexts[1]);
                     }
                 }
             }
@@ -145,7 +146,9 @@ impl SecurityProvider for NtlmPassportProvider {
         let session_arc = if ph_context.lower != 0 || ph_context.upper != 0 {
             if let Some(sm) = sm_lock.as_ref() {
                 if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>() {
-                    ntlm_p_sm.get_session(ph_context).ok_or(SEC_E_INVALID_HANDLE)
+                    ntlm_p_sm
+                        .get_session(ph_context)
+                        .ok_or(SEC_E_INVALID_HANDLE)
                 } else {
                     Err(SEC_E_INVALID_HANDLE)
                 }
@@ -158,7 +161,9 @@ impl SecurityProvider for NtlmPassportProvider {
             }
             if let Some(sm) = sm_lock.as_mut() {
                 if let Some(handle) = sm.create_context() {
-                    if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>() {
+                    if let Some(ntlm_p_sm) =
+                        sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
+                    {
                         *ph_new_context = handle;
                         Ok(ntlm_p_sm.get_session(&handle).unwrap())
                     } else {
@@ -219,7 +224,8 @@ impl SecurityProvider for NtlmPassportProvider {
                 SEC_I_CONTINUE_NEEDED
             }
             161 => {
-                let input_token = unsafe { find_sec_buffer(p_input, SECBUFFER_TOKEN, 0) }.ok_or(SEC_E_INVALID_TOKEN);
+                let input_token = unsafe { find_sec_buffer(p_input, SECBUFFER_TOKEN, 0) }
+                    .ok_or(SEC_E_INVALID_TOKEN);
                 let input_token = match input_token {
                     Ok(t) => t,
                     Err(e) => return e,

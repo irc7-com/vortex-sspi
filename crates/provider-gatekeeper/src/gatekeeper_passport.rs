@@ -388,24 +388,6 @@ impl SecurityProvider for GateKeeperPassportProvider {
     fn free_credentials_handle(&self, h: &Handle) -> SecurityStatus {
         self.base.free_credentials_handle(h)
     }
-    fn initialize_security_context_w(
-        &self,
-        p1: &Handle,
-        p2: &Handle,
-        p3: &str,
-        p4: u32,
-        p5: u32,
-        p6: u32,
-        p7: usize,
-        p8: u32,
-        p9: &mut Handle,
-        p10: usize,
-        p11: &mut u32,
-        p12: usize,
-    ) -> SecurityStatus {
-        self.base
-            .initialize_security_context_w(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12)
-    }
     fn query_security_package_info_a(&self, n: &str, p: &mut usize) -> SecurityStatus {
         self.base.query_security_package_info_a(n, p)
     }
