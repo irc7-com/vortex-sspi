@@ -1,7 +1,7 @@
 use crate::base_provider::{
-    find_sec_buffer, BaseProvider, Handle, SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SEC_E_OK,
-    SecBuffer, SecBufferDesc, SecPkgInfoA, SecPkgInfoW, SecurityProvider, SecurityStatus,
-    SessionManager,
+    BaseProvider, Handle, SEC_E_OK, SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SecBuffer,
+    SecBufferDesc, SecPkgInfoA, SecPkgInfoW, SecurityProvider, SecurityStatus, SessionManager,
+    find_sec_buffer,
 };
 use crate::gatekeeper::GateKeeperProvider;
 use crate::passport::PassportProvider;
@@ -57,14 +57,34 @@ impl SecurityProvider for GateKeeperPassportProvider {
         if !passport.initialize() {
             return false;
         }
-        passport.acquire_credentials_handle_a("", "Passport", 1, 0, 0, 0, 0, &mut self.passport_creds, 0);
+        passport.acquire_credentials_handle_a(
+            "",
+            "Passport",
+            1,
+            0,
+            0,
+            0,
+            0,
+            &mut self.passport_creds,
+            0,
+        );
         self.passport = Arc::new(passport);
 
         let mut gatekeeper = GateKeeperProvider::new();
         if !gatekeeper.initialize() {
             return false;
         }
-        gatekeeper.acquire_credentials_handle_a("", "GateKeeper", 1, 0, 0, 0, 0, &mut self.gatekeeper_creds, 0);
+        gatekeeper.acquire_credentials_handle_a(
+            "",
+            "GateKeeper",
+            1,
+            0,
+            0,
+            0,
+            0,
+            &mut self.gatekeeper_creds,
+            0,
+        );
         self.gatekeeper = Arc::new(gatekeeper);
 
         BaseProvider::initialize(self)
@@ -149,7 +169,9 @@ impl SecurityProvider for GateKeeperPassportProvider {
     fn impersonate_security_context(&self, h: &Handle) -> SecurityStatus {
         let sm_lock = self.base.session_manager.lock();
         if let Some(sm) = sm_lock.as_ref()
-            && let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+            && let Some(gk_p_sm) = sm
+                .as_any()
+                .downcast_ref::<GateKeeperPassportSessionManager>()
             && let Some(session_arc) = gk_p_sm.get_session(h)
         {
             let session = session_arc.lock();
@@ -163,11 +185,15 @@ impl SecurityProvider for GateKeeperPassportProvider {
     fn revert_security_context(&self, h: &Handle) -> SecurityStatus {
         let sm_lock = self.base.session_manager.lock();
         if let Some(sm) = sm_lock.as_ref()
-            && let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+            && let Some(gk_p_sm) = sm
+                .as_any()
+                .downcast_ref::<GateKeeperPassportSessionManager>()
             && let Some(session_arc) = gk_p_sm.get_session(h)
         {
             let session = session_arc.lock();
-            return self.gatekeeper.revert_security_context(&session.sub_contexts[0]);
+            return self
+                .gatekeeper
+                .revert_security_context(&session.sub_contexts[0]);
         }
         crate::base_provider::SEC_E_INVALID_HANDLE
     }
@@ -180,7 +206,10 @@ impl SecurityProvider for GateKeeperPassportProvider {
     ) -> SecurityStatus {
         let sm_lock = self.base.session_manager.lock();
         let session_arc = if let Some(sm) = sm_lock.as_ref() {
-            if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
+            if let Some(gk_p_sm) = sm
+                .as_any()
+                .downcast_ref::<GateKeeperPassportSessionManager>()
+            {
                 gk_p_sm.get_session(h)
             } else {
                 None
@@ -198,12 +227,68 @@ impl SecurityProvider for GateKeeperPassportProvider {
 
         if ul_attribute == 0 {
             // Fallback to GateKeeper
-            self.gatekeeper
-                .query_context_attributes_a(&session.sub_contexts[0], ul_attribute, p_buffer)
+            self.gatekeeper.query_context_attributes_a(
+                &session.sub_contexts[0],
+                ul_attribute,
+                p_buffer,
+            )
         } else if ul_attribute == 1 {
             // SECPKG_ATTR_NAMES
             self.passport
                 .query_context_attributes_a(&session.sub_contexts[1], 1, p_buffer)
+        } else if ul_attribute == 2 {
+            // SECPKG_ATTR_LIFESPAN
+            unsafe {
+                let out = p_buffer as *mut u32;
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0x7FFFFFFF;
+                *out.add(3) = 0x0FFFFFFF;
+            }
+            crate::base_provider::SEC_E_OK
+        } else {
+            crate::base_provider::SEC_E_UNSUPPORTED_FUNCTION
+        }
+    }
+
+    fn query_context_attributes_w(
+        &self,
+        h: &Handle,
+        ul_attribute: u32,
+        p_buffer: usize,
+    ) -> SecurityStatus {
+        let sm_lock = self.base.session_manager.lock();
+        let session_arc = if let Some(sm) = sm_lock.as_ref() {
+            if let Some(gk_p_sm) = sm
+                .as_any()
+                .downcast_ref::<GateKeeperPassportSessionManager>()
+            {
+                gk_p_sm.get_session(h)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let session_arc = match session_arc {
+            Some(arc) => arc,
+            None => return crate::base_provider::SEC_E_INVALID_HANDLE,
+        };
+
+        let session = session_arc.lock();
+
+        if ul_attribute == 0 {
+            // Fallback to GateKeeper
+            self.gatekeeper.query_context_attributes_w(
+                &session.sub_contexts[0],
+                ul_attribute,
+                p_buffer,
+            )
+        } else if ul_attribute == 1 {
+            // SECPKG_ATTR_NAMES
+            self.passport
+                .query_context_attributes_w(&session.sub_contexts[1], 1, p_buffer)
         } else if ul_attribute == 2 {
             // SECPKG_ATTR_LIFESPAN
             unsafe {
@@ -232,9 +317,8 @@ impl SecurityProvider for GateKeeperPassportProvider {
         pts_expiry: usize,
     ) -> SecurityStatus {
         use crate::base_provider::{
-            SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN,
+            SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN, SEC_E_NOT_SUPPORTED,
             SEC_E_UNKNOWN_CREDENTIALS, SEC_I_CONTINUE_NEEDED,
-            SEC_E_NOT_SUPPORTED,
         };
 
         if ph_credential.lower == 0 {
@@ -262,10 +346,11 @@ impl SecurityProvider for GateKeeperPassportProvider {
 
         let session_arc = if ph_context.lower != 0 || ph_context.upper != 0 {
             if let Some(sm) = sm_lock.as_ref() {
-                if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
-                    gk_p_sm
-                        .get_session(ph_context)
-                        .ok_or(SEC_E_INVALID_HANDLE)
+                if let Some(gk_p_sm) = sm
+                    .as_any()
+                    .downcast_ref::<GateKeeperPassportSessionManager>()
+                {
+                    gk_p_sm.get_session(ph_context).ok_or(SEC_E_INVALID_HANDLE)
                 } else {
                     Err(SEC_E_INVALID_HANDLE)
                 }
@@ -275,8 +360,9 @@ impl SecurityProvider for GateKeeperPassportProvider {
         } else {
             if let Some(sm) = sm_lock.as_mut() {
                 if let Some(handle) = sm.create_context() {
-                    if let Some(gk_p_sm) =
-                        sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+                    if let Some(gk_p_sm) = sm
+                        .as_any()
+                        .downcast_ref::<GateKeeperPassportSessionManager>()
                     {
                         *ph_new_context = handle;
                         Ok(gk_p_sm.get_session(&handle).unwrap())
@@ -345,6 +431,8 @@ impl SecurityProvider for GateKeeperPassportProvider {
                 }
             }
             162 => {
+                // The client read our OK and sent the Passport Ticket.
+                // We pass it to the Passport provider.
                 let context_handle = session.sub_contexts[1];
                 let res = self.passport.accept_security_context(
                     &self.passport_creds,
@@ -353,11 +441,11 @@ impl SecurityProvider for GateKeeperPassportProvider {
                     f_context_req,
                     target_data_rep,
                     &mut session.sub_contexts[1],
-                    p_output,
+                    p_output, // Passport won't write an output token here
                     pf_context_attr,
                     pts_expiry,
                 );
-                if res >= 0 {
+                if res == crate::base_provider::SEC_I_CONTINUE_NEEDED {
                     session.state = 163;
                 }
                 res
@@ -383,12 +471,16 @@ impl SecurityProvider for GateKeeperPassportProvider {
     fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
         let mut sm_lock = self.base.session_manager.lock();
         if let Some(sm) = sm_lock.as_mut() {
-            if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+            if let Some(gk_p_sm) = sm
+                .as_any()
+                .downcast_ref::<GateKeeperPassportSessionManager>()
                 && let Some(session_arc) = gk_p_sm.get_session(h)
             {
                 let session = session_arc.lock();
                 if session.state != 160 {
-                    let _ = self.gatekeeper.delete_security_context(&session.sub_contexts[0]);
+                    let _ = self
+                        .gatekeeper
+                        .delete_security_context(&session.sub_contexts[0]);
                 }
                 if session.state == 163 || session.state == 164 {
                     let _ = self
@@ -453,7 +545,10 @@ impl SecurityProvider for GateKeeperPassportProvider {
         let mut sm_lock = self.base.session_manager.lock();
         let session_arc = if ph_context.lower != 0 || ph_context.upper != 0 {
             if let Some(sm) = sm_lock.as_ref() {
-                if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
+                if let Some(gk_p_sm) = sm
+                    .as_any()
+                    .downcast_ref::<GateKeeperPassportSessionManager>()
+                {
                     gk_p_sm.get_session(ph_context).ok_or(SEC_E_INVALID_HANDLE)
                 } else {
                     Err(SEC_E_INVALID_HANDLE)
@@ -464,7 +559,10 @@ impl SecurityProvider for GateKeeperPassportProvider {
         } else {
             if let Some(sm) = sm_lock.as_mut() {
                 if let Some(handle) = sm.create_context() {
-                    if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
+                    if let Some(gk_p_sm) = sm
+                        .as_any()
+                        .downcast_ref::<GateKeeperPassportSessionManager>()
+                    {
                         *ph_new_context = handle;
                         Ok(gk_p_sm.get_session(&handle).unwrap())
                     } else {
@@ -627,10 +725,6 @@ impl SecurityProvider for GateKeeperPassportProvider {
             }
             _ => pts_expiry as i32,
         }
-    }
-
-    fn query_context_attributes_w(&self, _: &Handle, _: u32, _: usize) -> SecurityStatus {
-        SEC_E_OK
     }
 
     fn enumerate_security_packages_a(

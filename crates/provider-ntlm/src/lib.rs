@@ -360,13 +360,17 @@ mod tests {
 
     #[test]
     fn test_ntlm_hash_password() {
-        let password: Vec<u16> = "password".encode_utf16().chain(std::iter::once(0)).collect();
+        let password: Vec<u16> = "password"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let mut hash = [0u8; 16];
         let res = unsafe { ntlm_hash_password(hash.as_mut_ptr(), password.as_ptr()) };
         assert_eq!(res, SEC_E_OK);
 
         let expected: [u8; 16] = [
-            0x88, 0x46, 0xF7, 0xEA, 0xEE, 0x8F, 0xB1, 0x17, 0xAD, 0x06, 0xBD, 0xD8, 0x30, 0xB7, 0x58, 0x6C,
+            0x88, 0x46, 0xF7, 0xEA, 0xEE, 0x8F, 0xB1, 0x17, 0xAD, 0x06, 0xBD, 0xD8, 0x30, 0xB7,
+            0x58, 0x6C,
         ];
         assert_eq!(hash, expected);
     }

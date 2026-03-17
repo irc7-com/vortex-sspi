@@ -3,8 +3,8 @@ use crate::base_provider::{
     SecurityProvider, SecurityStatus, SessionManager,
 };
 use std::ffi::CString;
-use std::os::windows::ffi::OsStrExt;
 use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
 use windows_sys::Win32::Security::Authentication::Identity::{
     SecPkgInfoA as WinSecPkgInfoA, SecPkgInfoW as WinSecPkgInfoW, SecurityFunctionTableA,
     SecurityFunctionTableW,
@@ -12,7 +12,10 @@ use windows_sys::Win32::Security::Authentication::Identity::{
 
 /// Helper to convert Rust string to null-terminated UTF-16
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Equivalent to CNTLMProvider C++ class.
@@ -98,7 +101,7 @@ impl SecurityProvider for NtlmProvider {
 
                 let p_table_a = init_sec_interface_a();
                 let p_table_w = init_sec_interface_w();
-                
+
                 self.security_interface_a = p_table_a;
                 self.security_interface_w = p_table_w;
 
@@ -244,18 +247,35 @@ impl SecurityProvider for NtlmProvider {
             return SEC_E_UNSUPPORTED_FUNCTION;
         }
         // SSPI treats NULL pszPrincipal as "current user" — an empty string pointer is different.
-        let c_principal = if psz_principal.is_empty() { None } else { CString::new(psz_principal).ok() };
+        let c_principal = if psz_principal.is_empty() {
+            None
+        } else {
+            CString::new(psz_principal).ok()
+        };
         let c_package = CString::new(psz_package).unwrap_or_default();
         unsafe {
             let table = &*self.security_interface_a;
             if let Some(func) = table.AcquireCredentialsHandleA {
                 func(
-                    c_principal.as_ref().map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
+                    c_principal
+                        .as_ref()
+                        .map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
                     c_package.as_ptr() as *mut _,
                     f_credential_use,
                     pv_logon_id as *mut _,
                     p_auth_data as *mut _,
-                    std::mem::transmute(p_get_key_fn),
+                    std::mem::transmute::<
+                        usize,
+                        std::option::Option<
+                            unsafe extern "system" fn(
+                                *mut std::ffi::c_void,
+                                *mut std::ffi::c_void,
+                                u32,
+                                *mut *mut std::ffi::c_void,
+                                *mut i32,
+                            ),
+                        >,
+                    >(p_get_key_fn),
                     pv_get_key_arg as *mut _,
                     ph_credential as *mut Handle as *mut _,
                     pts_expiry as *mut _,
@@ -281,18 +301,35 @@ impl SecurityProvider for NtlmProvider {
         if self.security_interface_w.is_null() {
             return SEC_E_UNSUPPORTED_FUNCTION;
         }
-        let w_principal = if psz_principal.is_empty() { None } else { Some(to_wide(psz_principal)) };
+        let w_principal = if psz_principal.is_empty() {
+            None
+        } else {
+            Some(to_wide(psz_principal))
+        };
         let w_package = to_wide(psz_package);
         unsafe {
             let table = &*self.security_interface_w;
             if let Some(func) = table.AcquireCredentialsHandleW {
                 func(
-                    w_principal.as_ref().map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
+                    w_principal
+                        .as_ref()
+                        .map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
                     w_package.as_ptr() as *mut _,
                     f_credential_use,
                     pv_logon_id as *mut _,
                     p_auth_data as *mut _,
-                    std::mem::transmute(p_get_key_fn),
+                    std::mem::transmute::<
+                        usize,
+                        std::option::Option<
+                            unsafe extern "system" fn(
+                                *mut std::ffi::c_void,
+                                *mut std::ffi::c_void,
+                                u32,
+                                *mut *mut std::ffi::c_void,
+                                *mut i32,
+                            ),
+                        >,
+                    >(p_get_key_fn),
                     pv_get_key_arg as *mut _,
                     ph_credential as *mut Handle as *mut _,
                     pts_expiry as *mut _,
@@ -413,7 +450,11 @@ impl SecurityProvider for NtlmProvider {
             return SEC_E_UNSUPPORTED_FUNCTION;
         }
         // SSPI treats NULL pszTargetName as local auth.
-        let c_target = if psz_target_name.is_empty() { None } else { CString::new(psz_target_name).ok() };
+        let c_target = if psz_target_name.is_empty() {
+            None
+        } else {
+            CString::new(psz_target_name).ok()
+        };
         unsafe {
             let table = &*self.security_interface_a;
             if let Some(func) = table.InitializeSecurityContextA {
@@ -425,7 +466,9 @@ impl SecurityProvider for NtlmProvider {
                     } else {
                         ph_context as *const Handle as *mut _
                     },
-                    c_target.as_ref().map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
+                    c_target
+                        .as_ref()
+                        .map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
                     f_context_req,
                     reserved1,
                     target_data_rep,
@@ -460,7 +503,11 @@ impl SecurityProvider for NtlmProvider {
         if self.security_interface_w.is_null() {
             return SEC_E_UNSUPPORTED_FUNCTION;
         }
-        let w_target = if psz_target_name.is_empty() { None } else { Some(to_wide(psz_target_name)) };
+        let w_target = if psz_target_name.is_empty() {
+            None
+        } else {
+            Some(to_wide(psz_target_name))
+        };
         unsafe {
             let table = &*self.security_interface_w;
             if let Some(func) = table.InitializeSecurityContextW {
@@ -472,7 +519,9 @@ impl SecurityProvider for NtlmProvider {
                     } else {
                         ph_context as *const Handle as *mut _
                     },
-                    w_target.as_ref().map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
+                    w_target
+                        .as_ref()
+                        .map_or(std::ptr::null_mut(), |s| s.as_ptr() as *mut _),
                     f_context_req,
                     reserved1,
                     target_data_rep,

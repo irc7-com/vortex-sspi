@@ -42,7 +42,12 @@ impl GateKeeperSession {
             flags: 0,
             server_nonce: [0; 8],
             hmac_result: [0; 16],
-            gatekeeper_id: GUID { data1: 0, data2: 0, data3: 0, data4: [0; 8] },
+            gatekeeper_id: GUID {
+                data1: 0,
+                data2: 0,
+                data3: 0,
+                data4: [0; 8],
+            },
             hostname: [0; 16],
             hostname_len: 0,
             hmac_key: [

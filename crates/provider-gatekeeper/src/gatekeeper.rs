@@ -63,9 +63,9 @@ impl SecurityProvider for GateKeeperProvider {
         pts_expiry: usize,
     ) -> SecurityStatus {
         use crate::base_provider::{
-            find_sec_buffer, SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SEC_E_INVALID_HANDLE,
-            SEC_E_INVALID_TOKEN, SEC_E_OK, SEC_E_UNKNOWN_CREDENTIALS, SEC_E_UNSUPPORTED_FUNCTION,
-            SEC_I_CONTINUE_NEEDED,
+            SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN, SEC_E_OK, SEC_E_UNKNOWN_CREDENTIALS,
+            SEC_E_UNSUPPORTED_FUNCTION, SEC_I_CONTINUE_NEEDED, SECBUFFER_PKG_PARAMS,
+            SECBUFFER_TOKEN, find_sec_buffer,
         };
         use hmac::{Hmac, KeyInit, Mac};
         use md5::Md5;
@@ -150,9 +150,9 @@ impl SecurityProvider for GateKeeperProvider {
                     }
 
                     let is_valid_version = if session.version_flag == 0 {
-                        version >= 3 && version <= 4
+                        (3..=4).contains(&version)
                     } else {
-                        version >= 1 && version <= 4
+                        (1..=4).contains(&version)
                     };
 
                     if !is_valid_version {
@@ -188,7 +188,7 @@ impl SecurityProvider for GateKeeperProvider {
                 return SEC_E_INVALID_TOKEN;
             }
             let input_token = input_token_res.unwrap();
-            
+
             let mut sm_lock = self.base.session_manager.lock();
             if let Some(ref mut sm) = *sm_lock
                 && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
@@ -196,11 +196,11 @@ impl SecurityProvider for GateKeeperProvider {
             {
                 let mut session = session_arc.lock();
 
-                let is_match = true;
+                let is_match;
                 unsafe {
                     let p_in = (*input_token).pvBuffer as *const u32;
                     let cb_in = (*input_token).cbBuffer;
-                    
+
                     let mut magic = [0u8; 8];
                     ptr::copy_nonoverlapping(p_in as *const u8, magic.as_mut_ptr(), 8);
                     if &magic[0..5] != b"GKSSP" {
@@ -210,44 +210,45 @@ impl SecurityProvider for GateKeeperProvider {
                     let step = *p_in.add(3);
 
                     let is_valid_version = if session.version_flag == 0 {
-                        version >= 3 && version <= 4
+                        (3..=4).contains(&version)
                     } else {
-                        version >= 1 && version <= 4
+                        (1..=4).contains(&version)
                     };
 
                     if !is_valid_version || step != 3 {
                         return SEC_E_INVALID_TOKEN;
                     }
 
-                    if version >= 2 && cb_in != 48 {
-                        return SEC_E_INVALID_TOKEN;
-                    } else if version == 1 && cb_in != 32 {
+                    if (version >= 2 && cb_in != 48) || (version == 1 && cb_in != 32) {
                         return SEC_E_INVALID_TOKEN;
                     }
 
                     if version >= 2 {
                         let p_guid = p_in.add(8) as *const u8;
-                        ptr::copy_nonoverlapping(p_guid, &mut session.gatekeeper_id as *mut _ as *mut u8, 16);
+                        ptr::copy_nonoverlapping(
+                            p_guid,
+                            &mut session.gatekeeper_id as *mut _ as *mut u8,
+                            16,
+                        );
                     }
 
-                    // Verify HMAC
+                    // Verify HMAC — the client's HMAC is at token offset 16 (after header)
                     let p_hmac = p_in.add(4) as *const u8;
 
-                    let mut data = Vec::with_capacity(8 + session.hostname_len as usize);
+                    // Build the same data the server used: nonce + hostname (for v3+)
+                    // or nonce only (for v1/v2)
+                    let mut data = Vec::new();
                     data.extend_from_slice(&session.server_nonce);
-                    data.extend_from_slice(&session.hostname[..session.hostname_len as usize]);
+                    if version >= 3 {
+                        data.extend_from_slice(&session.hostname[..session.hostname_len as usize]);
+                    }
 
                     type HmacMd5 = Hmac<Md5>;
                     let mut mac = HmacMd5::new_from_slice(&session.hmac_key).unwrap();
                     mac.update(&data);
                     let result = mac.finalize().into_bytes();
 
-                    let mut is_match = true;
-                    for i in 0..16 {
-                        if result[i] != *p_hmac.add(i) {
-                            is_match = false;
-                        }
-                    }
+                    is_match = (0..16).all(|i| result[i] == *p_hmac.add(i));
                 }
 
                 if !is_match {
@@ -398,9 +399,9 @@ impl SecurityProvider for GateKeeperProvider {
                     let step = *p_in.add(3);
 
                     let is_valid_version = if session.version_flag == 0 {
-                        version >= 3 && version <= 4
+                        (3..=4).contains(&version)
                     } else {
-                        version >= 1 && version <= 4
+                        (1..=4).contains(&version)
                     };
 
                     if !is_valid_version || step != 2 {

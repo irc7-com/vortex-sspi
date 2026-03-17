@@ -4,9 +4,9 @@ use std::sync::Arc;
 pub use windows_sys::Win32::{
     Foundation::{
         SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INSUFFICIENT_MEMORY, SEC_E_INVALID_HANDLE,
-        SEC_E_INVALID_TOKEN, SEC_E_NOT_SUPPORTED, SEC_E_OK, SEC_E_SECPKG_NOT_FOUND,
-        SEC_E_TARGET_UNKNOWN, SEC_E_UNKNOWN_CREDENTIALS, SEC_E_UNSUPPORTED_FUNCTION,
-        SEC_I_CONTINUE_NEEDED,
+        SEC_E_INVALID_TOKEN, SEC_E_LOGON_DENIED, SEC_E_NOT_SUPPORTED, SEC_E_OK,
+        SEC_E_SECPKG_NOT_FOUND, SEC_E_TARGET_UNKNOWN, SEC_E_UNKNOWN_CREDENTIALS,
+        SEC_E_UNSUPPORTED_FUNCTION, SEC_I_CONTINUE_NEEDED,
     },
     Security::Authentication::Identity::{
         SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SecBuffer, SecBufferDesc, SecPkgInfoA, SecPkgInfoW,
@@ -14,6 +14,20 @@ pub use windows_sys::Win32::{
 };
 
 pub type SecurityStatus = i32;
+
+pub fn wide_to_string(ptr: *mut u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        String::from_utf16_lossy(slice)
+    }
+}
 
 /// Utility to find a SecBuffer of a specific type in a SecBufferDesc.
 /// Ported from sub_3723B953 (FindSecBuffer) in IDA.
@@ -413,30 +427,80 @@ impl SecurityProvider for BaseProvider {
     fn acquire_credentials_handle_a(
         &self,
         _: &str,
-        _: &str,
-        _: u32,
+        psz_package: &str,
+        f_credential_use: u32,
         _: usize,
         _: usize,
         _: usize,
         _: usize,
-        _: &mut Handle,
-        _: usize,
+        ph_credential: &mut Handle,
+        pts_expiry: usize,
     ) -> SecurityStatus {
+        let package_name = if self.pkg_info_ascii.Name.is_null() {
+            ""
+        } else {
+            unsafe {
+                std::ffi::CStr::from_ptr(self.pkg_info_ascii.Name as *const i8)
+                    .to_str()
+                    .unwrap_or("")
+            }
+        };
+
+        if psz_package != package_name {
+            return SEC_E_SECPKG_NOT_FOUND;
+        }
+
+        if f_credential_use == 0 || f_credential_use > 2 {
+            return SEC_E_NOT_SUPPORTED;
+        }
+
+        *ph_credential = self.provider_creds;
+
+        unsafe {
+            if pts_expiry != 0 {
+                let pts = pts_expiry as *mut u64;
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
         SEC_E_OK
     }
 
     fn acquire_credentials_handle_w(
         &self,
         _: &str,
-        _: &str,
-        _: u32,
+        psz_package: &str,
+        f_credential_use: u32,
         _: usize,
         _: usize,
         _: usize,
         _: usize,
-        _: &mut Handle,
-        _: usize,
+        ph_credential: &mut Handle,
+        pts_expiry: usize,
     ) -> SecurityStatus {
+        let package_name = if self.pkg_info_unicode.Name.is_null() {
+            String::new()
+        } else {
+            wide_to_string(self.pkg_info_unicode.Name)
+        };
+
+        if psz_package != package_name {
+            return SEC_E_SECPKG_NOT_FOUND;
+        }
+
+        if f_credential_use == 0 || f_credential_use > 2 {
+            return SEC_E_NOT_SUPPORTED;
+        }
+
+        *ph_credential = self.provider_creds;
+
+        unsafe {
+            if pts_expiry != 0 {
+                let pts = pts_expiry as *mut u64;
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
         SEC_E_OK
     }
 

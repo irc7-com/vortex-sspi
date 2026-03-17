@@ -254,6 +254,53 @@ impl SecurityProvider for NtlmPassportProvider {
         }
     }
 
+    fn query_context_attributes_w(
+        &self,
+        h: &Handle,
+        ul_attribute: u32,
+        p_buffer: usize,
+    ) -> SecurityStatus {
+        let sm_lock = self.base.session_manager.lock();
+        let session_arc = if let Some(sm) = sm_lock.as_ref() {
+            if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>() {
+                ntlm_p_sm.get_session(h)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let session_arc = match session_arc {
+            Some(arc) => arc,
+            None => return SEC_E_INVALID_HANDLE,
+        };
+
+        let session = session_arc.lock();
+
+        if ul_attribute == 0 {
+            // Fallback to NTLM
+            self.ntlm
+                .query_context_attributes_w(&session.sub_contexts[0], ul_attribute, p_buffer)
+        } else if ul_attribute == 1 {
+            // SECPKG_ATTR_NAMES
+            self.passport
+                .query_context_attributes_w(&session.sub_contexts[1], 1, p_buffer)
+        } else if ul_attribute == 2 {
+            // SECPKG_ATTR_LIFESPAN
+            unsafe {
+                let out = p_buffer as *mut u32;
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0x7FFFFFFF;
+                *out.add(3) = 0x0FFFFFFF;
+            }
+            SEC_E_OK
+        } else {
+            SEC_E_NOT_SUPPORTED
+        }
+    }
+
     fn accept_security_context(
         &self,
         ph_credential: &Handle,
@@ -374,6 +421,8 @@ impl SecurityProvider for NtlmPassportProvider {
                 }
             }
             162 => {
+                // The client read our OK and sent the Passport Ticket.
+                // We pass it to the Passport provider.
                 let context_handle = session.sub_contexts[1];
                 let res = self.passport.accept_security_context(
                     &self.passport_creds,
@@ -382,11 +431,11 @@ impl SecurityProvider for NtlmPassportProvider {
                     f_context_req,
                     16,
                     &mut session.sub_contexts[1],
-                    p_output,
+                    p_output, // Passport won't write an output token here
                     pf_context_attr,
                     pts_expiry,
                 );
-                if res >= 0 {
+                if res == crate::base_provider::SEC_I_CONTINUE_NEEDED {
                     session.state = 163;
                 }
                 res
@@ -644,9 +693,6 @@ impl SecurityProvider for NtlmPassportProvider {
     ) -> SecurityStatus {
         self.base
             .initialize_security_context_w(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12)
-    }
-    fn query_context_attributes_w(&self, h: &Handle, a: u32, b: usize) -> SecurityStatus {
-        self.base.query_context_attributes_w(h, a, b)
     }
     fn query_security_package_info_a(&self, n: &str, p: &mut usize) -> SecurityStatus {
         self.base.query_security_package_info_a(n, p)
