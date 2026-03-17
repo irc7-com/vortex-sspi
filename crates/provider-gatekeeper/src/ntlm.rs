@@ -3,8 +3,6 @@ use crate::base_provider::{
     SecurityProvider, SecurityStatus, SessionManager,
 };
 use std::ffi::CString;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
 use windows_sys::Win32::Security::Authentication::Identity::{
     SecPkgInfoA as WinSecPkgInfoA, SecPkgInfoW as WinSecPkgInfoW, SecurityFunctionTableA,
     SecurityFunctionTableW,
@@ -12,10 +10,7 @@ use windows_sys::Win32::Security::Authentication::Identity::{
 
 /// Helper to convert Rust string to null-terminated UTF-16
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
+    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// Equivalent to CNTLMProvider C++ class.

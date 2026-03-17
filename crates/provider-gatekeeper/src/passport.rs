@@ -450,10 +450,7 @@ impl SecurityProvider for PassportProvider {
                 }
 
                 // Convert to UTF-16 wide string
-                use std::os::windows::ffi::OsStrExt;
-                let mut wide: Vec<u16> = std::ffi::OsStr::new(&info.client_info)
-                    .encode_wide()
-                    .collect();
+                let mut wide: Vec<u16> = info.client_info.encode_utf16().collect();
                 wide.push(0); // null terminator
 
                 let boxed_slice = wide.into_boxed_slice();
