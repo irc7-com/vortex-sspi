@@ -138,18 +138,17 @@ pub fn query_and_print_context_attributes(gk: &impl SecurityProvider, h_context:
         1, // SECPKG_ATTR_NAMES
         &mut names_ctx as *mut _ as usize,
     );
-    if res == SEC_E_OK && !names_ctx.sUserName.is_null() {
-        let name_str = unsafe { CStr::from_ptr(names_ctx.sUserName).to_string_lossy() };
-        println!("  Context Name: {}", name_str);
-
-        // Free the allocated buffer using our BaseProvider impl
-        gk.free_context_buffer(names_ctx.sUserName as usize);
-        println!("  Context buffer successfully freed.\n");
+    if res == SEC_E_OK {
+        if !names_ctx.sUserName.is_null() {
+            let name_str = unsafe { CStr::from_ptr(names_ctx.sUserName).to_string_lossy() };
+            println!("  Context Name: {}", name_str);
+            gk.free_context_buffer(names_ctx.sUserName as usize);
+            println!("  Context buffer successfully freed.\n");
+        } else {
+            println!("  QueryContextAttributes successful (SEC_E_OK) but returned null pointer.\n");
+        }
     } else {
-        println!(
-            "  Failed to query SECPKG_ATTR_NAMES or returned null pointer. Status: {:#x}\n",
-            res
-        );
+        println!("  Failed to query SECPKG_ATTR_NAMES. Status: {:#x}\n", res);
     }
 
     // --- Query Context Attributes (SECPKG_ATTR_NAMES) (WIDE) ---
@@ -162,17 +161,16 @@ pub fn query_and_print_context_attributes(gk: &impl SecurityProvider, h_context:
         1, // SECPKG_ATTR_NAMES
         &mut names_ctx_w as *mut _ as usize,
     );
-    if res_w == SEC_E_OK && !names_ctx_w.sUserName.is_null() {
-        let name_str = unsafe { wstr_from_ptr(names_ctx_w.sUserName) };
-        println!("  Context Name: {}", name_str);
-
-        // Free the allocated buffer using our BaseProvider impl
-        gk.free_context_buffer(names_ctx_w.sUserName as usize);
-        println!("  Context buffer successfully freed.\n");
+    if res_w == SEC_E_OK {
+        if !names_ctx_w.sUserName.is_null() {
+            let name_str = unsafe { wstr_from_ptr(names_ctx_w.sUserName) };
+            println!("  Context Name: {}", name_str);
+            gk.free_context_buffer(names_ctx_w.sUserName as usize);
+            println!("  Context buffer successfully freed.\n");
+        } else {
+            println!("  QueryContextAttributes successful (SEC_E_OK) but returned null pointer.\n");
+        }
     } else {
-        println!(
-            "  Failed to query SECPKG_ATTR_NAMES or returned null pointer. Status: {:#x}\n",
-            res_w
-        );
+        println!("  Failed to query SECPKG_ATTR_NAMES (WIDE). Status: {:#x}\n", res_w);
     }
 }

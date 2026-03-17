@@ -62,7 +62,35 @@ impl SecurityProvider for GateKeeperProvider {
         _pf_context_attr: &mut u32,
         _pts_expiry: usize,
     ) -> SecurityStatus {
-        SEC_E_OK
+        use crate::base_provider::{SEC_I_CONTINUE_NEEDED, SECBUFFER_TOKEN, find_sec_buffer};
+        if _ph_context.lower == 0 && _ph_context.upper == 0 {
+            let server_reply: [u8; 24] = [
+                0x47, 0x4B, 0x53, 0x53, 0x50, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x00,
+                0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            ];
+            if let Some(out_token) = unsafe { find_sec_buffer(_p_output, SECBUFFER_TOKEN, 0) } {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        server_reply.as_ptr(),
+                        (*out_token).pvBuffer as *mut u8,
+                        24,
+                    );
+                    (*out_token).cbBuffer = 24;
+                }
+            }
+            *_ph_new_context = Handle {
+                lower: 8888,
+                upper: 9999,
+            };
+            SEC_I_CONTINUE_NEEDED
+        } else {
+            if let Some(out_token) = unsafe { find_sec_buffer(_p_output, SECBUFFER_TOKEN, 0) } {
+                unsafe {
+                    (*out_token).cbBuffer = 0;
+                }
+            }
+            SEC_E_OK
+        }
     }
 
     fn initialize_security_context_a(
@@ -124,48 +152,41 @@ impl SecurityProvider for GateKeeperProvider {
                 let mut sm_lock = self.base.session_manager.lock();
                 if let Some(ref mut sm) = *sm_lock
                     && let Some(handle) = sm.create_context()
-                        && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
-                            && let Some(session_arc) = gk_sm.get_session(&handle) {
-                                let mut session = session_arc.lock();
+                    && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
+                    && let Some(session_arc) = gk_sm.get_session(&handle)
+                {
+                    let mut session = session_arc.lock();
 
-                                unsafe {
-                                    // Fill GateKeeperID (GUID)
-                                    let p_guid = (*pb0).pvBuffer as *const u8;
-                                    ptr::copy_nonoverlapping(
-                                        p_guid,
-                                        &mut session.gatekeeper_id as *mut _ as *mut u8,
-                                        16,
-                                    );
+                    unsafe {
+                        // Fill GateKeeperID (GUID)
+                        let p_guid = (*pb0).pvBuffer as *const u8;
+                        ptr::copy_nonoverlapping(
+                            p_guid,
+                            &mut session.gatekeeper_id as *mut _ as *mut u8,
+                            16,
+                        );
 
-                                    // Fill Hostname
-                                    let p_host = (*pb1).pvBuffer as *const u8;
-                                    let cb_host = (*pb1).cbBuffer;
-                                    let copy_len = std::cmp::min(cb_host as usize, 15);
-                                    ptr::copy_nonoverlapping(
-                                        p_host,
-                                        session.hostname.as_mut_ptr(),
-                                        copy_len,
-                                    );
-                                    session.hostname[copy_len] = 0;
-                                    session.hostname_len = copy_len as u32;
+                        // Fill Hostname
+                        let p_host = (*pb1).pvBuffer as *const u8;
+                        let cb_host = (*pb1).cbBuffer;
+                        let copy_len = std::cmp::min(cb_host as usize, 15);
+                        ptr::copy_nonoverlapping(p_host, session.hostname.as_mut_ptr(), copy_len);
+                        session.hostname[copy_len] = 0;
+                        session.hostname_len = copy_len as u32;
 
-                                    // Init Output Token (Step 1)
-                                    let p_out = (*output_token).pvBuffer as *mut u32;
-                                    ptr::write_bytes(p_out, 0, 4); // Clear buffer
-                                    ptr::copy_nonoverlapping(
-                                        b"GKSSP\0\0\0".as_ptr(),
-                                        p_out as *mut u8,
-                                        8,
-                                    );
-                                    *p_out.add(2) = 3; // Version
-                                    *p_out.add(3) = 1; // Step
-                                    (*output_token).cbBuffer = 16;
-                                }
+                        // Init Output Token (Step 1)
+                        let p_out = (*output_token).pvBuffer as *mut u32;
+                        ptr::write_bytes(p_out, 0, 4); // Clear buffer
+                        ptr::copy_nonoverlapping(b"GKSSP\0\0\0".as_ptr(), p_out as *mut u8, 8);
+                        *p_out.add(2) = 3; // Version
+                        *p_out.add(3) = 1; // Step
+                        (*output_token).cbBuffer = 16;
+                    }
 
-                                session.flags |= 2; // Step 1 complete
-                                *ph_new_context = handle;
-                                return SEC_I_CONTINUE_NEEDED;
-                            }
+                    session.flags |= 2; // Step 1 complete
+                    *ph_new_context = handle;
+                    return SEC_I_CONTINUE_NEEDED;
+                }
             }
             SEC_E_INVALID_TOKEN
         } else {
@@ -173,91 +194,85 @@ impl SecurityProvider for GateKeeperProvider {
             let sm_lock = self.base.session_manager.lock();
             if let Some(ref sm) = *sm_lock
                 && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
-                    && let Some(session_arc) = gk_sm.get_session(ph_context) {
-                        let mut session = session_arc.lock();
+                && let Some(session_arc) = gk_sm.get_session(ph_context)
+            {
+                let mut session = session_arc.lock();
 
-                        // 1. Process Input Token (Step 2)
-                        let input_token_res =
-                            unsafe { find_sec_buffer(p_input, SECBUFFER_TOKEN, 0) };
-                        if input_token_res.is_none() {
-                            return SEC_E_INVALID_TOKEN;
-                        }
-                        let input_token = input_token_res.unwrap();
+                // 1. Process Input Token (Step 2)
+                let input_token_res = unsafe { find_sec_buffer(p_input, SECBUFFER_TOKEN, 0) };
+                if input_token_res.is_none() {
+                    return SEC_E_INVALID_TOKEN;
+                }
+                let input_token = input_token_res.unwrap();
 
-                        unsafe {
-                            let p_in = (*input_token).pvBuffer as *const u32;
-                            let cb_in = (*input_token).cbBuffer;
+                unsafe {
+                    let p_in = (*input_token).pvBuffer as *const u32;
+                    let cb_in = (*input_token).cbBuffer;
 
-                            if cb_in != 24 || (session.flags & 2) == 0 {
-                                return SEC_E_INVALID_TOKEN;
-                            }
-
-                            // Verify Header
-                            let mut magic = [0u8; 8];
-                            ptr::copy_nonoverlapping(p_in as *const u8, magic.as_mut_ptr(), 8);
-                            if &magic[0..5] != b"GKSSP" {
-                                return SEC_E_INVALID_TOKEN;
-                            }
-
-                            let version = *p_in.add(2);
-                            let step = *p_in.add(3);
-
-                            if version < 3 || step != 2 {
-                                return SEC_E_INVALID_TOKEN;
-                            }
-
-                            // Save Server Nonce
-                            ptr::copy_nonoverlapping(
-                                p_in.add(4) as *const u8,
-                                session.server_nonce.as_mut_ptr(),
-                                8,
-                            );
-                            session.flags = (session.flags & !2) | 4; // Step 2 complete
-                        }
-
-                        // 2. Generate Output Token (Step 3)
-                        unsafe {
-                            // Data = ServerNonce (8) + Hostname (cbHostname)
-                            let mut data = Vec::with_capacity(8 + session.hostname_len as usize);
-                            data.extend_from_slice(&session.server_nonce);
-                            data.extend_from_slice(
-                                &session.hostname[..session.hostname_len as usize],
-                            );
-
-                            // HMAC-MD5
-                            type HmacMd5 = Hmac<Md5>;
-                            let mut mac = HmacMd5::new_from_slice(&session.hmac_key)
-                                .map_err(|_| SEC_E_INVALID_TOKEN)
-                                .unwrap();
-                            mac.update(&data);
-                            let result = mac.finalize().into_bytes();
-                            ptr::copy_nonoverlapping(
-                                result.as_ptr(),
-                                session.hmac_result.as_mut_ptr(),
-                                16,
-                            );
-
-                            // Token layout (48 bytes): "GKSSP\0\0\0" (8) | Version (4) | Step (4) | HMAC (16) | GateKeeperID (16)
-                            let p_out = (*output_token).pvBuffer as *mut u32;
-                            ptr::write_bytes(p_out, 0, 12);
-                            ptr::copy_nonoverlapping(b"GKSSP\0\0\0".as_ptr(), p_out as *mut u8, 8);
-                            *p_out.add(2) = 3; // Version
-                            *p_out.add(3) = 3; // Step 3
-                            ptr::copy_nonoverlapping(
-                                session.hmac_result.as_ptr(),
-                                p_out.add(4) as *mut u8,
-                                16,
-                            );
-                            ptr::copy_nonoverlapping(
-                                &session.gatekeeper_id as *const _ as *const u8,
-                                p_out.add(8) as *mut u8,
-                                16,
-                            );
-                            (*output_token).cbBuffer = 48;
-                        }
-
-                        return SEC_E_OK;
+                    if cb_in != 24 || (session.flags & 2) == 0 {
+                        return SEC_E_INVALID_TOKEN;
                     }
+
+                    // Verify Header
+                    let mut magic = [0u8; 8];
+                    ptr::copy_nonoverlapping(p_in as *const u8, magic.as_mut_ptr(), 8);
+                    if &magic[0..5] != b"GKSSP" {
+                        return SEC_E_INVALID_TOKEN;
+                    }
+
+                    let version = *p_in.add(2);
+                    let step = *p_in.add(3);
+
+                    if version < 3 || step != 2 {
+                        return SEC_E_INVALID_TOKEN;
+                    }
+
+                    // Save Server Nonce
+                    ptr::copy_nonoverlapping(
+                        p_in.add(4) as *const u8,
+                        session.server_nonce.as_mut_ptr(),
+                        8,
+                    );
+                    session.flags = (session.flags & !2) | 4; // Step 2 complete
+                }
+
+                // 2. Generate Output Token (Step 3)
+                unsafe {
+                    // Data = ServerNonce (8) + Hostname (cbHostname)
+                    let mut data = Vec::with_capacity(8 + session.hostname_len as usize);
+                    data.extend_from_slice(&session.server_nonce);
+                    data.extend_from_slice(&session.hostname[..session.hostname_len as usize]);
+
+                    // HMAC-MD5
+                    type HmacMd5 = Hmac<Md5>;
+                    let mut mac = HmacMd5::new_from_slice(&session.hmac_key)
+                        .map_err(|_| SEC_E_INVALID_TOKEN)
+                        .unwrap();
+                    mac.update(&data);
+                    let result = mac.finalize().into_bytes();
+                    ptr::copy_nonoverlapping(result.as_ptr(), session.hmac_result.as_mut_ptr(), 16);
+
+                    // Token layout (48 bytes): "GKSSP\0\0\0" (8) | Version (4) | Step (4) | HMAC (16) | GateKeeperID (16)
+                    let p_out = (*output_token).pvBuffer as *mut u32;
+                    ptr::write_bytes(p_out, 0, 12);
+                    ptr::copy_nonoverlapping(b"GKSSP\0\0\0".as_ptr(), p_out as *mut u8, 8);
+                    *p_out.add(2) = 3; // Version
+                    *p_out.add(3) = 3; // Step 3
+                    ptr::copy_nonoverlapping(
+                        session.hmac_result.as_ptr(),
+                        p_out.add(4) as *mut u8,
+                        16,
+                    );
+                    ptr::copy_nonoverlapping(
+                        &session.gatekeeper_id as *const _ as *const u8,
+                        p_out.add(8) as *mut u8,
+                        16,
+                    );
+                    (*output_token).cbBuffer = 48;
+                }
+
+                return SEC_E_OK;
+            }
             SEC_E_INVALID_HANDLE
         }
     }
@@ -269,8 +284,8 @@ impl SecurityProvider for GateKeeperProvider {
         p_buffer: usize,
     ) -> SecurityStatus {
         use crate::base_provider::{
-            SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INVALID_HANDLE,
-            SEC_E_OK, SEC_E_UNSUPPORTED_FUNCTION,
+            SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INVALID_HANDLE, SEC_E_OK,
+            SEC_E_UNSUPPORTED_FUNCTION,
         };
         use crate::gatekeeper_session_manager::GateKeeperSessionManager;
 
@@ -359,8 +374,8 @@ impl SecurityProvider for GateKeeperProvider {
         p_buffer: usize,
     ) -> SecurityStatus {
         use crate::base_provider::{
-            SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INVALID_HANDLE,
-            SEC_E_OK, SEC_E_UNSUPPORTED_FUNCTION,
+            SEC_E_INCOMPLETE_CREDENTIALS, SEC_E_INVALID_HANDLE, SEC_E_OK,
+            SEC_E_UNSUPPORTED_FUNCTION,
         };
         use crate::gatekeeper_session_manager::GateKeeperSessionManager;
 

@@ -62,6 +62,9 @@ impl SecurityProvider for PassportProvider {
         _pf_context_attr: &mut u32,
         _pts_expiry: usize,
     ) -> SecurityStatus {
+        if let Some(out_token) = unsafe { find_sec_buffer(_p_output, SECBUFFER_TOKEN, 0) } {
+            unsafe { (*out_token).cbBuffer = 0; }
+        }
         SEC_E_OK
     }
 
@@ -162,15 +165,16 @@ impl SecurityProvider for PassportProvider {
                     ptr::copy_nonoverlapping(input_ptr, output_ptr, to_copy);
                     (*output_token).cbBuffer = to_copy as u32;
 
-                    // Save the rest
                     if input_len > to_copy {
                         let remaining = input_len - to_copy;
                         session.buffer = vec![0u8; remaining];
-                        ptr::copy_nonoverlapping(
-                            input_ptr.add(to_copy),
-                            session.buffer.as_mut_ptr(),
-                            remaining,
-                        );
+                        if input_ptr.is_null() == false {
+                            ptr::copy_nonoverlapping(
+                                input_ptr.add(to_copy),
+                                session.buffer.as_mut_ptr(),
+                                remaining,
+                            );
+                        }
                     }
                     session.is_done = false;
                 } else {
@@ -206,8 +210,11 @@ impl SecurityProvider for PassportProvider {
                         let input_len = (*input_token).cbBuffer as usize;
                         let input_ptr = (*input_token).pvBuffer as *const u8;
                         let mut buf = vec![0u8; input_len.min(99)];
-                        ptr::copy_nonoverlapping(input_ptr, buf.as_mut_ptr(), buf.len());
+                        if input_len > 0 && !input_ptr.is_null() {
+                            ptr::copy_nonoverlapping(input_ptr, buf.as_mut_ptr(), buf.len());
+                        }
                         session.client_info = String::from_utf8_lossy(&buf).into_owned();
+                        (*output_token).cbBuffer = 0;
                     }
                     SEC_E_OK
                 } else {

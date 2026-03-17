@@ -1,6 +1,8 @@
 use crate::base_provider::{
-    BaseProvider, Handle, SEC_E_OK, SECBUFFER_TOKEN, SecBuffer, SecBufferDesc, SecPkgInfoA,
-    SecPkgInfoW, SecurityProvider, SecurityStatus, SessionManager, find_sec_buffer,
+    BaseProvider, Handle, SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN, SEC_E_NOT_SUPPORTED, SEC_E_OK,
+    SEC_E_SECPKG_NOT_FOUND, SEC_E_UNKNOWN_CREDENTIALS, SEC_I_CONTINUE_NEEDED, SECBUFFER_TOKEN,
+    SecBuffer, SecBufferDesc, SecPkgInfoA, SecPkgInfoW, SecurityProvider, SecurityStatus,
+    SessionManager, find_sec_buffer,
 };
 use crate::ntlm::NtlmProvider;
 use crate::passport::PassportProvider;
@@ -16,6 +18,9 @@ pub struct NtlmPassportProvider {
     pub ntlm: Arc<NtlmProvider>,
     pub passport_creds: Handle,
 }
+
+unsafe impl Send for NtlmPassportProvider {}
+unsafe impl Sync for NtlmPassportProvider {}
 
 impl Default for NtlmPassportProvider {
     fn default() -> Self {
@@ -48,68 +53,360 @@ impl SecurityProvider for NtlmPassportProvider {
             w!("NTLMPassport"),
             w!("NTLMPassport Security Package"),
         );
+        let ntlm_mut = Arc::get_mut(&mut self.ntlm).unwrap();
+        if !ntlm_mut.initialize() {
+            return false;
+        }
+        let passport_mut = Arc::get_mut(&mut self.passport).unwrap();
+        if !passport_mut.initialize() {
+            return false;
+        }
+
+        // Initialize passport credentials once at startup
+        let mut ts_expiry = 0;
+        let res = passport_mut.acquire_credentials_handle_a(
+            "",
+            "Passport",
+            3, // SECPKG_CRED_BOTH
+            0,
+            0,
+            0,
+            0,
+            &mut self.passport_creds,
+            &mut ts_expiry as *mut _ as usize,
+        );
+
+        if res != SEC_E_OK {
+            // Note: failing here might kill the provider in reality, but we ignore
+        }
+
         BaseProvider::initialize(self)
     }
 
-    fn shutdown(&self) {}
+    fn shutdown(&self) {
+        let _ = self.passport.free_credentials_handle(&self.passport_creds);
+        self.ntlm.shutdown();
+        self.passport.shutdown();
+    }
+
     fn create_session_manager(&self) -> Option<Box<dyn SessionManager>> {
         Some(Box::new(NtlmPassportSessionManager::new()))
     }
 
-    fn accept_security_context(
+    fn acquire_credentials_handle_a(
         &self,
-        _: &Handle,
-        _: &mut Handle,
-        _: usize,
-        _: u32,
-        _: u32,
-        _: &mut Handle,
-        _: usize,
-        _: &mut u32,
-        _: usize,
+        _psz_principal: &str,
+        psz_package: &str,
+        f_credential_use: u32,
+        pv_logon_id: usize,
+        p_auth_data: usize,
+        p_get_key_fn: usize,
+        pv_get_key_arg: usize,
+        ph_credential: &mut Handle,
+        pts_expiry: usize,
     ) -> SecurityStatus {
+        if psz_package != "NTLMPassport" {
+            return SEC_E_SECPKG_NOT_FOUND;
+        }
+
+        let mut ntlm_cred = Box::new(Handle::default());
+        let res = self.ntlm.acquire_credentials_handle_a(
+            "", // original code passes NULL
+            "NTLM",
+            f_credential_use,
+            pv_logon_id,
+            p_auth_data,
+            p_get_key_fn,
+            pv_get_key_arg,
+            &mut ntlm_cred,
+            pts_expiry,
+        );
+
+        if res != SEC_E_OK {
+            return res;
+        }
+
+        if f_credential_use == 0 || f_credential_use > 2 {
+            return SEC_E_NOT_SUPPORTED;
+        }
+
+        ph_credential.upper = 0;
+        ph_credential.lower = Box::into_raw(ntlm_cred) as usize;
+
+        unsafe {
+            let pts = pts_expiry as *mut u64;
+            if !pts.is_null() {
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
         SEC_E_OK
     }
 
-    fn acquire_credentials_handle_a(
-        &self,
-        p1: &str,
-        p2: &str,
-        p3: u32,
-        p4: usize,
-        p5: usize,
-        p6: usize,
-        p7: usize,
-        p8: &mut Handle,
-        p9: usize,
-    ) -> SecurityStatus {
-        self.base
-            .acquire_credentials_handle_a(p1, p2, p3, p4, p5, p6, p7, p8, p9)
+    fn free_credentials_handle(&self, h: &Handle) -> SecurityStatus {
+        if h.lower == 0 && h.upper == 0 {
+            return SEC_E_INVALID_HANDLE;
+        }
+
+        let ntlm_cred_ptr = h.lower as *mut Handle;
+        let res = self
+            .ntlm
+            .free_credentials_handle(unsafe { &*ntlm_cred_ptr });
+
+        unsafe {
+            let _ = Box::from_raw(ntlm_cred_ptr);
+        }
+        res
     }
 
     fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
-        let sm_lock = self.base.session_manager.lock();
-        if let Some(sm) = sm_lock.as_ref()
-            && let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
-                && let Some(session_arc) = ntlm_p_sm.get_session(h) {
-                    let session = session_arc.lock();
-                    if session.sub_contexts[0].lower != 0 || session.sub_contexts[0].upper != 0 {
-                        self.ntlm.delete_security_context(&session.sub_contexts[0]);
-                    }
-                    if session.sub_contexts[1].lower != 0 || session.sub_contexts[1].upper != 0 {
-                        self.passport
-                            .delete_security_context(&session.sub_contexts[1]);
-                    }
+        let mut sm_lock = self.base.session_manager.lock();
+        if let Some(sm) = sm_lock.as_mut() {
+            if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
+                && let Some(session_arc) = ntlm_p_sm.get_session(h)
+            {
+                let session = session_arc.lock();
+                if session.state != 160 {
+                    let _ = self.ntlm.delete_security_context(&session.sub_contexts[0]);
                 }
-        self.passport.delete_security_context(h)
-    }
-
-    fn free_credentials_handle(&self, h: &Handle) -> SecurityStatus {
-        self.base.free_credentials_handle(h)
+                if session.state == 163 || session.state == 164 {
+                    let _ = self
+                        .passport
+                        .delete_security_context(&session.sub_contexts[1]);
+                }
+            }
+            sm.delete_context(h);
+            return SEC_E_OK;
+        }
+        SEC_E_INVALID_HANDLE
     }
 
     fn impersonate_security_context(&self, h: &Handle) -> SecurityStatus {
-        self.ntlm.impersonate_security_context(h)
+        let sm_lock = self.base.session_manager.lock();
+        if let Some(sm) = sm_lock.as_ref()
+            && let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
+            && let Some(session_arc) = ntlm_p_sm.get_session(h)
+        {
+            let session = session_arc.lock();
+            return self
+                .ntlm
+                .impersonate_security_context(&session.sub_contexts[0]);
+        }
+        SEC_E_INVALID_HANDLE
+    }
+
+    fn revert_security_context(&self, h: &Handle) -> SecurityStatus {
+        let sm_lock = self.base.session_manager.lock();
+        if let Some(sm) = sm_lock.as_ref()
+            && let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
+            && let Some(session_arc) = ntlm_p_sm.get_session(h)
+        {
+            let session = session_arc.lock();
+            return self.ntlm.revert_security_context(&session.sub_contexts[0]);
+        }
+        SEC_E_INVALID_HANDLE
+    }
+
+    fn query_context_attributes_a(
+        &self,
+        h: &Handle,
+        ul_attribute: u32,
+        p_buffer: usize,
+    ) -> SecurityStatus {
+        let sm_lock = self.base.session_manager.lock();
+        let session_arc = if let Some(sm) = sm_lock.as_ref() {
+            if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>() {
+                ntlm_p_sm.get_session(h)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let session_arc = match session_arc {
+            Some(arc) => arc,
+            None => return SEC_E_INVALID_HANDLE,
+        };
+
+        let session = session_arc.lock();
+
+        if ul_attribute == 0 {
+            // Fallback to NTLM
+            self.ntlm
+                .query_context_attributes_a(&session.sub_contexts[0], ul_attribute, p_buffer)
+        } else if ul_attribute == 1 {
+            // SECPKG_ATTR_NAMES
+            self.passport
+                .query_context_attributes_a(&session.sub_contexts[1], 1, p_buffer)
+        } else if ul_attribute == 2 {
+            // SECPKG_ATTR_LIFESPAN
+            unsafe {
+                let out = p_buffer as *mut u32;
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0x7FFFFFFF;
+                *out.add(3) = 0x0FFFFFFF;
+            }
+            SEC_E_OK
+        } else {
+            SEC_E_NOT_SUPPORTED
+        }
+    }
+
+    fn accept_security_context(
+        &self,
+        ph_credential: &Handle,
+        ph_context: &mut Handle,
+        p_input: usize,
+        f_context_req: u32,
+        target_data_rep: u32,
+        ph_new_context: &mut Handle,
+        p_output: usize,
+        pf_context_attr: &mut u32,
+        pts_expiry: usize,
+    ) -> SecurityStatus {
+        if ph_credential.lower == 0 {
+            return SEC_E_UNKNOWN_CREDENTIALS;
+        }
+        if target_data_rep != SECURITY_NATIVE_DREP {
+            return SEC_E_NOT_SUPPORTED;
+        }
+
+        unsafe {
+            let pts = pts_expiry as *mut u64;
+            if !pts.is_null() {
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
+        let output_token_res = unsafe { find_sec_buffer(p_output, SECBUFFER_TOKEN, 0) };
+        if output_token_res.is_none() {
+            return SEC_E_INVALID_TOKEN;
+        }
+        let output_token = output_token_res.unwrap();
+        let _max_length = unsafe { (*output_token).cbBuffer }; // unused but kept for parity
+
+        let mut sm_lock = self.base.session_manager.lock();
+
+        let session_arc = if ph_context.lower != 0 || ph_context.upper != 0 {
+            if let Some(sm) = sm_lock.as_ref() {
+                if let Some(ntlm_p_sm) = sm.as_any().downcast_ref::<NtlmPassportSessionManager>() {
+                    ntlm_p_sm
+                        .get_session(ph_context)
+                        .ok_or(SEC_E_INVALID_HANDLE)
+                } else {
+                    Err(SEC_E_INVALID_HANDLE)
+                }
+            } else {
+                Err(SEC_E_INVALID_HANDLE)
+            }
+        } else {
+            if let Some(sm) = sm_lock.as_mut() {
+                if let Some(handle) = sm.create_context() {
+                    if let Some(ntlm_p_sm) =
+                        sm.as_any().downcast_ref::<NtlmPassportSessionManager>()
+                    {
+                        *ph_new_context = handle;
+                        Ok(ntlm_p_sm.get_session(&handle).unwrap())
+                    } else {
+                        Err(SEC_E_INVALID_HANDLE)
+                    }
+                } else {
+                    Err(SEC_E_INVALID_HANDLE)
+                }
+            } else {
+                Err(SEC_E_INVALID_HANDLE)
+            }
+        };
+
+        let session_arc = match session_arc {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+
+        let mut session = session_arc.lock();
+        let state = session.state;
+        let ntlm_cred = unsafe { &*(ph_credential.lower as *const Handle) };
+
+        match state {
+            160 => {
+                let context_handle = session.sub_contexts[0];
+                let res = self.ntlm.accept_security_context(
+                    ntlm_cred,
+                    &mut context_handle.clone(),
+                    p_input,
+                    f_context_req,
+                    16,
+                    &mut session.sub_contexts[0],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                );
+                if res >= 0 {
+                    session.state = 161;
+                }
+                res
+            }
+            161 => {
+                let mut context_handle = session.sub_contexts[0];
+                let res = self.ntlm.accept_security_context(
+                    ntlm_cred,
+                    &mut context_handle,
+                    p_input,
+                    f_context_req,
+                    16,
+                    &mut session.sub_contexts[0],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                );
+                if res == SEC_E_OK {
+                    session.state = 162;
+                    unsafe {
+                        let out_ptr = (*output_token).pvBuffer as *mut u8;
+                        ptr::copy_nonoverlapping(b"OK".as_ptr(), out_ptr, 2);
+                        (*output_token).cbBuffer = 2;
+                    }
+                    SEC_I_CONTINUE_NEEDED // 0x90312 == 590610
+                } else {
+                    res
+                }
+            }
+            162 => {
+                let context_handle = session.sub_contexts[1];
+                let res = self.passport.accept_security_context(
+                    &self.passport_creds,
+                    &mut context_handle.clone(),
+                    p_input,
+                    f_context_req,
+                    16,
+                    &mut session.sub_contexts[1],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                );
+                if res >= 0 {
+                    session.state = 163;
+                }
+                res
+            }
+            163 => {
+                let mut context_handle = session.sub_contexts[1];
+                self.passport.accept_security_context(
+                    &self.passport_creds,
+                    &mut context_handle,
+                    p_input,
+                    f_context_req,
+                    16,
+                    &mut session.sub_contexts[1],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                )
+            }
+            _ => p_output as i32, // Odd fallback from IDA
+        }
     }
 
     fn initialize_security_context_a(
@@ -127,16 +424,11 @@ impl SecurityProvider for NtlmPassportProvider {
         pf_context_attr: &mut u32,
         pts_expiry: usize,
     ) -> SecurityStatus {
-        use crate::base_provider::{
-            SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN, SEC_E_UNKNOWN_CREDENTIALS,
-            SEC_E_UNSUPPORTED_FUNCTION, SEC_I_CONTINUE_NEEDED,
-        };
-
-        if !self.base.is_valid_credential_handle(ph_credential) {
+        if ph_credential.lower == 0 {
             return SEC_E_UNKNOWN_CREDENTIALS;
         }
         if target_data_rep != SECURITY_NATIVE_DREP {
-            return SEC_E_UNSUPPORTED_FUNCTION;
+            return SEC_E_NOT_SUPPORTED;
         }
 
         unsafe {
@@ -188,6 +480,7 @@ impl SecurityProvider for NtlmPassportProvider {
 
         let mut session = session_arc.lock();
         let state = session.state;
+        let ntlm_cred = unsafe { &*(ph_credential.lower as *const Handle) };
 
         match state {
             160 => {
@@ -207,7 +500,7 @@ impl SecurityProvider for NtlmPassportProvider {
 
                 let context_handle = session.sub_contexts[0];
                 let res = self.ntlm.initialize_security_context_a(
-                    ph_credential,
+                    ntlm_cred,
                     &context_handle,
                     psz_target_name,
                     f_context_req,
@@ -262,7 +555,7 @@ impl SecurityProvider for NtlmPassportProvider {
                         f_context_req,
                         0,
                         SECURITY_NATIVE_DREP,
-                        &p_desc as *const _ as usize,
+                        &p_desc as *const _ as usize, // Passing initial data saved in state 160
                         0,
                         &mut session.sub_contexts[1],
                         p_output,
@@ -278,8 +571,8 @@ impl SecurityProvider for NtlmPassportProvider {
                 } else {
                     // Continue NTLM
                     let context_handle = session.sub_contexts[0];
-                    self.ntlm.initialize_security_context_a(
-                        ph_credential,
+                    let _ = self.ntlm.initialize_security_context_a(
+                        ntlm_cred,
                         &context_handle,
                         psz_target_name,
                         f_context_req,
@@ -291,7 +584,8 @@ impl SecurityProvider for NtlmPassportProvider {
                         p_output,
                         pf_context_attr,
                         pts_expiry,
-                    )
+                    );
+                    SEC_I_CONTINUE_NEEDED
                 }
             }
             163 => {
@@ -314,13 +608,6 @@ impl SecurityProvider for NtlmPassportProvider {
             }
             _ => pts_expiry as i32,
         }
-    }
-
-    fn make_signature(&self, h: &Handle, a: u32, b: usize, c: u32) -> SecurityStatus {
-        self.ntlm.make_signature(h, a, b, c)
-    }
-    fn revert_security_context(&self, h: &Handle) -> SecurityStatus {
-        self.ntlm.revert_security_context(h)
     }
 
     fn enumerate_security_packages_a(

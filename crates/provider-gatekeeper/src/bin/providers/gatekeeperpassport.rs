@@ -2,14 +2,10 @@ use provider_gatekeeper::base_provider::{
     SEC_E_OK, SEC_I_CONTINUE_NEEDED, SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SecBuffer,
     SecBufferDesc,
 };
-use provider_gatekeeper::{
-    GateKeeperPassportProvider, Handle, SecurityProvider,
-};
+use provider_gatekeeper::{GateKeeperPassportProvider, Handle, SecurityProvider};
 use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
 
-use crate::utils::{
-    enumerate_and_print_packages, print_round_results,
-};
+use crate::utils::{enumerate_and_print_packages, print_round_results};
 
 /// This binary demonstrates the SSPI handshake process for the GateKeeper provider.
 /// It simulates a client-side authentication flow, including package enumeration
