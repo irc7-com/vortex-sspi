@@ -5,14 +5,9 @@ use provider_gatekeeper::base_provider::{
 use provider_gatekeeper::{GateKeeperProvider, Handle, SecurityProvider};
 use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
 
-use crate::utils::{
-    enumerate_and_print_packages, print_round_results,
-    query_and_print_context_attributes,
-};
+use crate::utils::{enumerate_and_print_packages, hexdump, query_and_print_context_attributes};
 
 /// This binary demonstrates the SSPI handshake process for the GateKeeper provider.
-/// It simulates a client-side authentication flow, including package enumeration
-/// and a multi-round InitializeSecurityContext handshake.
 pub fn main() {
     let mut gk = GateKeeperProvider::new();
     if !gk.initialize() {
@@ -20,20 +15,79 @@ pub fn main() {
         return;
     }
 
+    println!("╔══════════════════════════════════════════╗");
+    println!("║     GateKeeper Provider Handshake Demo   ║");
+    println!("╚══════════════════════════════════════════╝");
+
     // --- Package Enumeration Phase ---
-    // Enumerating packages allows us to discover capabilities and buffer requirements.
     enumerate_and_print_packages(&gk);
 
-    // --- Security Context Handshake (Round 1) ---
-    // In the first round, the client provides its identity information (GUID and Hostname)
-    // to the SSPI package to generate the initial Step 1 token.
-    println!("\n=== Starting Security Context Handshake (Round 1) ===");
-
-    let ph_credential = Handle::default();
-    let ph_context = Handle::default();
-    let mut ph_new_context = Handle::default();
-    let mut pf_context_attr = 0;
+    // --- Acquire Credentials ---
+    println!("\n=== Acquiring Credentials ===");
+    let mut client_cred = Handle::default();
+    let mut server_cred = Handle::default();
     let mut ts_expiry: i64 = 0;
+
+    let result = gk.acquire_credentials_handle_a(
+        "",           // pszPrincipal (NULL = current user)
+        "GateKeeper", // pszPackage
+        2,            // SECPKG_CRED_OUTBOUND (client initiator)
+        0,            // pvLogonId
+        0,            // pAuthData
+        0,            // pGetKeyFn
+        0,            // pvGetKeyArgument
+        &mut client_cred,
+        &mut ts_expiry as *mut i64 as usize,
+    );
+
+    if result != SEC_E_OK {
+        eprintln!("AcquireCredentialsHandleA failed: {:#x}", result);
+        return;
+    }
+    println!(
+        "  Client credentials acquired: {:#x}:{:#x}",
+        client_cred.lower, client_cred.upper
+    );
+
+    // Get a separate credential handle for the server side
+    let result = gk.acquire_credentials_handle_a(
+        "",           // pszPrincipal
+        "GateKeeper", // pszPackage
+        1,            // SECPKG_CRED_INBOUND (server acceptor)
+        0,            // pvLogonId
+        0,            // pAuthData
+        0,            // pGetKeyFn
+        0,            // pvGetKeyArgument
+        &mut server_cred,
+        &mut ts_expiry as *mut i64 as usize,
+    );
+
+    if result != SEC_E_OK {
+        eprintln!("AcquireCredentialsHandleA (server) failed: {:#x}", result);
+        return;
+    }
+    println!(
+        "  Server credentials acquired: {:#x}:{:#x}",
+        server_cred.lower, server_cred.upper
+    );
+
+    let max_token_size: usize = 1024;
+    let mut isc_out_token = vec![0u8; max_token_size];
+    let mut asc_out_token = vec![0u8; max_token_size];
+
+    let mut client_ctx_new = Handle::default();
+    let mut server_ctx_new = Handle::default();
+    let mut pf_context_attr: u32 = 0;
+
+    let mut round = 0u32;
+    #[allow(unused_assignments)]
+    let mut isc_status: i32 = SEC_I_CONTINUE_NEEDED;
+    let mut asc_status: i32 = SEC_I_CONTINUE_NEEDED;
+
+    // Track the server's last output length for the next ISC input
+    let mut last_server_output_len: u32 = 0;
+    let mut first_isc = true;
+    let mut first_asc = true;
 
     // GateKeeper requires a 16-byte GUID and a hostname as input parameters.
     let mut guid = [0u8; 16];
@@ -41,124 +95,196 @@ pub fn main() {
         0xE0, 0x04, 0x25, 0x3F, 0x89, 0x4F, 0xD3, 0x11, 0x9A, 0x0C, 0x03, 0x05, 0xE8, 0x2C, 0x33,
         0x01,
     ]);
-    let hostname = "TESTHOST\0";
+    let hostname = b"TESTHOST\0";
 
-    let mut in_buffers = [
-        SecBuffer {
-            cbBuffer: 16,
-            BufferType: SECBUFFER_PKG_PARAMS,
-            pvBuffer: guid.as_mut_ptr() as *mut _,
-        },
-        SecBuffer {
-            cbBuffer: hostname.len() as u32,
-            BufferType: SECBUFFER_PKG_PARAMS,
-            pvBuffer: hostname.as_ptr() as *mut _,
-        },
-    ];
-    let input_desc = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 2,
-        pBuffers: in_buffers.as_mut_ptr(),
-    };
+    loop {
+        round += 1;
 
-    // Prepare output buffer for the generated Step 1 token.
-    let max_token_size = 64; // Based on GateKeeper package info
-    let mut out_token = vec![0u8; max_token_size as usize];
-    let mut out_buffers = [SecBuffer {
-        cbBuffer: max_token_size,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: out_token.as_mut_ptr() as *mut _,
-    }];
-    let mut output_desc = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: out_buffers.as_mut_ptr(),
-    };
+        // ===== Client: InitializeSecurityContext =====
+        println!("\n=== ISC Round {} (Client) ===", round);
 
-    let result = gk.initialize_security_context_a(
-        &ph_credential,
-        &ph_context,
-        "",
-        0,
-        0,
-        SECURITY_NATIVE_DREP,
-        &input_desc as *const _ as usize,
-        0,
-        &mut ph_new_context,
-        &mut output_desc as *mut _ as usize,
-        &mut pf_context_attr,
-        &mut ts_expiry as *mut i64 as usize,
-    );
+        // Prepare input from server's last output (if any)
+        let mut isc_in_buffers = [
+            SecBuffer {
+                cbBuffer: last_server_output_len,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: asc_out_token.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: 16,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: guid.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: hostname.len() as u32,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: hostname.as_ptr() as *mut _,
+            },
+        ];
+        let isc_input_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: if first_isc { 3 } else { 1 },
+            pBuffers: isc_in_buffers.as_mut_ptr(),
+        };
 
-    if result != SEC_I_CONTINUE_NEEDED {
-        println!("InitializeSecurityContextA (Round 1) failed: {:#x}", result);
-        return;
-    }
+        // Prepare output buffer
+        isc_out_token.fill(0);
+        let mut isc_out_buffers = [SecBuffer {
+            cbBuffer: max_token_size as u32,
+            BufferType: SECBUFFER_TOKEN,
+            pvBuffer: isc_out_token.as_mut_ptr() as *mut _,
+        }];
+        let mut isc_output_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: 1,
+            pBuffers: isc_out_buffers.as_mut_ptr(),
+        };
 
-    print_round_results(1, &out_buffers[0], &out_token);
+        let ctx_for_isc = if first_isc {
+            Handle::default()
+        } else {
+            client_ctx_new
+        };
 
-    // --- Security Context Handshake (Round 2) ---
-    // We simulate a response from the server which contains a challenge (Step 2).
-    // The client processes this challenge to generate the final Step 3 token.
-    println!("\n=== Processing Server Challenge (Round 2) ===");
-
-    let server_reply: [u8; 24] = [
-        0x47, 0x4B, 0x53, 0x53, 0x50, 0x00, 0x00, 0x00, // Header ("GKSSP\0\0\0")
-        0x03, 0x00, 0x00, 0x00, // Version 3
-        0x02, 0x00, 0x00, 0x00, // Step 2 (Server Challenge)
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // Server Nonce
-    ];
-
-    let mut in_buffers_round2 = [SecBuffer {
-        cbBuffer: server_reply.len() as u32,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: server_reply.as_ptr() as *mut _,
-    }];
-    let input_desc_round2 = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: in_buffers_round2.as_mut_ptr(),
-    };
-
-    // Prepare output buffer for the generated Step 3 token.
-    let mut out_buffers_round2 = [SecBuffer {
-        cbBuffer: max_token_size,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: out_token.as_mut_ptr() as *mut _,
-    }];
-    let mut output_desc_round2 = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: out_buffers_round2.as_mut_ptr(),
-    };
-
-    // Note: We use the context handle from the first round call.
-    let h_context_round1 = ph_new_context;
-    let result_round2 = gk.initialize_security_context_a(
-        &ph_credential,
-        &h_context_round1,
-        "",
-        0,
-        0,
-        SECURITY_NATIVE_DREP,
-        &input_desc_round2 as *const _ as usize,
-        0,
-        &mut ph_new_context,
-        &mut output_desc_round2 as *mut _ as usize,
-        &mut pf_context_attr,
-        &mut ts_expiry as *mut i64 as usize,
-    );
-
-    if result_round2 != SEC_E_OK {
-        println!(
-            "InitializeSecurityContextA (Round 2) failed: {:#x}",
-            result_round2
+        isc_status = gk.initialize_security_context_a(
+            &client_cred,
+            &ctx_for_isc,
+            "",
+            0,
+            0,
+            SECURITY_NATIVE_DREP,
+            &isc_input_desc as *const _ as usize,
+            0,
+            &mut client_ctx_new,
+            &mut isc_output_desc as *mut _ as usize,
+            &mut pf_context_attr,
+            &mut ts_expiry as *mut i64 as usize,
         );
-        return;
+
+        first_isc = false;
+        let isc_output_len = isc_out_buffers[0].cbBuffer;
+
+        println!("  ISC returned: {:#x}", isc_status);
+        if isc_output_len > 0 {
+            println!("  Client output token ({} bytes):", isc_output_len);
+            hexdump(&isc_out_token[..isc_output_len as usize]);
+        }
+
+        if isc_status != SEC_E_OK && isc_status != SEC_I_CONTINUE_NEEDED {
+            eprintln!("  ISC failed with error: {:#x}", isc_status);
+            break;
+        }
+
+        // If both sides are done, we're finished
+        if isc_status == SEC_E_OK && asc_status == SEC_E_OK {
+            println!("\n✓ Both client and server report SEC_E_OK. Handshake complete!");
+            break;
+        }
+
+        // ===== Server: AcceptSecurityContext =====
+        println!("\n=== ASC Round {} (Server) ===", round);
+
+        let mut asc_in_buffers = [
+            SecBuffer {
+                cbBuffer: isc_output_len,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: isc_out_token.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: 16,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: guid.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: hostname.len() as u32,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: hostname.as_ptr() as *mut _,
+            },
+        ];
+        let asc_input_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: if first_asc { 3 } else { 1 },
+            pBuffers: asc_in_buffers.as_mut_ptr(),
+        };
+
+        asc_out_token.fill(0);
+        let mut asc_out_buffers = [SecBuffer {
+            cbBuffer: max_token_size as u32,
+            BufferType: SECBUFFER_TOKEN,
+            pvBuffer: asc_out_token.as_mut_ptr() as *mut _,
+        }];
+        let mut asc_output_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: 1,
+            pBuffers: asc_out_buffers.as_mut_ptr(),
+        };
+
+        let mut ctx_for_asc = if first_asc {
+            Handle::default()
+        } else {
+            server_ctx_new
+        };
+
+        asc_status = gk.accept_security_context(
+            &server_cred,
+            &mut ctx_for_asc,
+            &asc_input_desc as *const _ as usize,
+            0,
+            SECURITY_NATIVE_DREP,
+            &mut server_ctx_new,
+            &mut asc_output_desc as *mut _ as usize,
+            &mut pf_context_attr,
+            &mut ts_expiry as *mut i64 as usize,
+        );
+
+        first_asc = false;
+        last_server_output_len = asc_out_buffers[0].cbBuffer;
+
+        println!("  ASC returned: {:#x}", asc_status);
+        if last_server_output_len > 0 {
+            if asc_status != SEC_E_OK {
+                println!("  Server output token ({} bytes):", last_server_output_len);
+                hexdump(&asc_out_token[..last_server_output_len as usize]);
+            }
+        }
+
+        if asc_status != SEC_E_OK && asc_status != SEC_I_CONTINUE_NEEDED {
+            eprintln!("  ASC failed with error: {:#x}", asc_status);
+            break;
+        }
+
+        if asc_status == SEC_E_OK && last_server_output_len == 0 {
+            println!("\n✓ Server returned SEC_E_OK with no output. Handshake complete!");
+            break;
+        }
+
+        if asc_status == SEC_E_OK && isc_status == SEC_E_OK {
+            println!("\n✓ Both client and server report SEC_E_OK. Handshake complete!");
+            break;
+        }
+
+        // Safety: prevent infinite loops
+        if round > 10 {
+            eprintln!("Too many rounds — something is wrong.");
+            break;
+        }
     }
 
-    print_round_results(2, &out_buffers_round2[0], &out_token);
-    println!("\nSecurity context successfully established.");
+    // --- Query Context Attributes ---
+    if isc_status == SEC_E_OK || asc_status == SEC_E_OK {
+        println!("\n=== Querying Client Context Attributes ===");
+        query_and_print_context_attributes(&gk, &client_ctx_new);
 
-    query_and_print_context_attributes(&gk, &h_context_round1);
+        println!("\n=== Querying Server Context Attributes ===");
+        query_and_print_context_attributes(&gk, &server_ctx_new);
+    }
+
+    // --- Cleanup ---
+    gk.delete_security_context(&client_ctx_new);
+    gk.delete_security_context(&server_ctx_new);
+    gk.free_credentials_handle(&client_cred);
+    gk.free_credentials_handle(&server_cred);
+    gk.shutdown();
+
+    println!("\nGateKeeper handshake demo complete.");
 }

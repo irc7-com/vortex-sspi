@@ -154,10 +154,8 @@ pub fn main() {
 
         let isc_cb = isc_out_buffers[0].cbBuffer as usize;
         if isc_cb > 0 {
-            if isc_status != SEC_E_OK {
-                println!("  Client output token ({} bytes):", isc_cb);
-                hexdump(&isc_out_token[..isc_cb]);
-            }
+            println!("  Client output token ({} bytes):", isc_cb);
+            hexdump(&isc_out_token[..isc_cb]);
         } else {
             println!("  Client output token (0 bytes)");
         }

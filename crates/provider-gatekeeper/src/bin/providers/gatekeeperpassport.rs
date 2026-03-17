@@ -5,204 +5,299 @@ use provider_gatekeeper::base_provider::{
 use provider_gatekeeper::{GateKeeperPassportProvider, Handle, SecurityProvider};
 use windows_sys::Win32::Security::Authentication::Identity::SECURITY_NATIVE_DREP;
 
-use crate::utils::{enumerate_and_print_packages, print_round_results};
+use crate::utils::{enumerate_and_print_packages, hexdump, query_and_print_context_attributes};
 
-/// This binary demonstrates the SSPI handshake process for the GateKeeper provider.
-/// It simulates a client-side authentication flow, including package enumeration
-/// and a multi-round InitializeSecurityContext handshake.
+/// This binary demonstrates the SSPI handshake process for the GateKeeperPassport provider.
 pub fn main() {
-    let mut gk = GateKeeperPassportProvider::new();
-    if !gk.initialize() {
-        eprintln!("Failed to initialize GateKeeper provider.");
+    let mut gkpass = GateKeeperPassportProvider::new();
+    if !gkpass.initialize() {
+        eprintln!("Failed to initialize GateKeeperPassport provider.");
         return;
     }
+
+    println!("╔══════════════════════════════════════════╗");
+    println!("║ GateKeeperPassport Handshake Demo        ║");
+    println!("╚══════════════════════════════════════════╝");
 
     // --- Package Enumeration Phase ---
-    // Enumerating packages allows us to discover capabilities and buffer requirements.
-    enumerate_and_print_packages(&gk);
+    enumerate_and_print_packages(&gkpass);
 
-    // --- Security Context Handshake (Round 1) ---
-    // In the first round, the client provides its identity information (GUID and Hostname)
-    // to the SSPI package to generate the initial Step 1 token.
-    println!("\n=== Starting Security Context Handshake (Round 1) ===");
-
-    let ph_credential = Handle::default();
-    let ph_context = Handle::default();
-    let mut ph_new_context = Handle::default();
-    let mut pf_context_attr = 0;
+    // --- Acquire Credentials ---
+    println!("\n=== Acquiring Credentials ===");
+    let mut client_cred = Handle::default();
+    let mut server_cred = Handle::default();
     let mut ts_expiry: i64 = 0;
 
-    let hostname = "dir.irc7.com";
+    let result = gkpass.acquire_credentials_handle_a(
+        "",                   // pszPrincipal (NULL = current user)
+        "GateKeeperPassport", // pszPackage
+        2,                    // SECPKG_CRED_OUTBOUND (client initiator)
+        0,                    // pvLogonId
+        0,                    // pAuthData
+        0,                    // pGetKeyFn
+        0,                    // pvGetKeyArgument
+        &mut client_cred,
+        &mut ts_expiry as *mut i64 as usize,
+    );
+
+    if result != SEC_E_OK {
+        eprintln!("AcquireCredentialsHandleA failed: {:#x}", result);
+        return;
+    }
+    println!(
+        "  Client credentials acquired: {:#x}:{:#x}",
+        client_cred.lower, client_cred.upper
+    );
+
+    let result = gkpass.acquire_credentials_handle_a(
+        "",                   // pszPrincipal
+        "GateKeeperPassport", // pszPackage
+        1,                    // SECPKG_CRED_INBOUND (server acceptor)
+        0,                    // pvLogonId
+        0,                    // pAuthData
+        0,                    // pGetKeyFn
+        0,                    // pvGetKeyArgument
+        &mut server_cred,
+        &mut ts_expiry as *mut i64 as usize,
+    );
+
+    if result != SEC_E_OK {
+        eprintln!("AcquireCredentialsHandleA (server) failed: {:#x}", result);
+        return;
+    }
+    println!(
+        "  Server credentials acquired: {:#x}:{:#x}",
+        server_cred.lower, server_cred.upper
+    );
+
+    let max_token_size: usize = 4096;
+    let mut isc_out_token = vec![0u8; max_token_size];
+    let mut asc_out_token = vec![0u8; max_token_size];
+
+    let mut client_ctx_new = Handle::default();
+    let mut server_ctx_new = Handle::default();
+    let mut pf_context_attr: u32 = 0;
+
+    let mut round = 0u32;
+    #[allow(unused_assignments)]
+    let mut isc_status: i32 = SEC_I_CONTINUE_NEEDED;
+
     let passportticket_and_passportprofile =
         b"00000016PassportTicket00000017PassportProfile".to_vec();
-    let mut in_buffers = [
-        SecBuffer {
-            cbBuffer: passportticket_and_passportprofile.len() as u32,
+    let hostname = b"dir.irc7.com\0";
+    let mut guid = [0u8; 16];
+    guid.copy_from_slice(&[
+        0xE0, 0x04, 0x25, 0x3F, 0x89, 0x4F, 0xD3, 0x11, 0x9A, 0x0C, 0x03, 0x05, 0xE8, 0x2C, 0x33,
+        0x01,
+    ]);
+
+    let mut last_server_output_len: u32 = 0;
+    let mut first_isc = true;
+    let mut first_asc = true;
+
+    loop {
+        round += 1;
+
+        // ===== Client: InitializeSecurityContext =====
+        println!("\n=== ISC Round {} (Client) ===", round);
+
+        let mut isc_in_buffers = [
+            SecBuffer {
+                cbBuffer: if first_isc {
+                    passportticket_and_passportprofile.len() as u32
+                } else {
+                    last_server_output_len
+                },
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: if first_isc {
+                    passportticket_and_passportprofile.as_ptr() as *mut _
+                } else {
+                    asc_out_token.as_mut_ptr() as *mut _
+                },
+            },
+            SecBuffer {
+                cbBuffer: 16,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: guid.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: hostname.len() as u32,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: hostname.as_ptr() as *mut _,
+            },
+        ];
+        let isc_input_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: if first_isc { 3 } else { 1 },
+            pBuffers: isc_in_buffers.as_mut_ptr(),
+        };
+
+        isc_out_token.fill(0);
+        let mut isc_out_buffers = [SecBuffer {
+            cbBuffer: max_token_size as u32,
             BufferType: SECBUFFER_TOKEN,
-            pvBuffer: passportticket_and_passportprofile.as_ptr() as *mut _,
-        },
-        SecBuffer {
-            cbBuffer: hostname.len() as u32,
-            BufferType: SECBUFFER_PKG_PARAMS,
-            pvBuffer: hostname.as_ptr() as *mut _,
-        },
-    ];
-    let input_desc = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: in_buffers.len() as u32,
-        pBuffers: in_buffers.as_mut_ptr(),
-    };
+            pvBuffer: isc_out_token.as_mut_ptr() as *mut _,
+        }];
+        let mut isc_output_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: 1,
+            pBuffers: isc_out_buffers.as_mut_ptr(),
+        };
 
-    // Prepare output buffer for the generated Step 1 token.
-    let max_token_size = 64; // Based on GateKeeper package info
-    let mut out_token = vec![0u8; max_token_size as usize];
-    let mut out_buffers = [SecBuffer {
-        cbBuffer: max_token_size,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: out_token.as_mut_ptr() as *mut _,
-    }];
-    let mut output_desc = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: out_buffers.as_mut_ptr(),
-    };
+        let ctx_for_isc = if first_isc {
+            Handle::default()
+        } else {
+            client_ctx_new.clone()
+        };
 
-    let result = gk.initialize_security_context_a(
-        &ph_credential,
-        &ph_context,
-        "",
-        0,
-        0,
-        SECURITY_NATIVE_DREP,
-        &input_desc as *const _ as usize,
-        0,
-        &mut ph_new_context,
-        &mut output_desc as *mut _ as usize,
-        &mut pf_context_attr,
-        &mut ts_expiry as *mut i64 as usize,
-    );
-
-    if result != SEC_I_CONTINUE_NEEDED {
-        println!("InitializeSecurityContextA (Round 1) failed: {:#x}", result);
-        return;
-    }
-
-    print_round_results(1, &out_buffers[0], &out_token);
-
-    // --- Security Context Handshake (Round 2) ---
-    // We simulate a response from the server which contains a challenge (Step 2).
-    // The client processes this challenge to generate the final Step 3 token.
-    println!("\n=== Processing Server Challenge (Round 2) ===");
-
-    let server_reply: [u8; 24] = [
-        0x47, 0x4B, 0x53, 0x53, 0x50, 0x00, 0x00, 0x00, // Header ("GKSSP\0\0\0")
-        0x03, 0x00, 0x00, 0x00, // Version 3
-        0x02, 0x00, 0x00, 0x00, // Step 2 (Server Challenge)
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // Server Nonce
-    ];
-
-    let mut in_buffers_round2 = [SecBuffer {
-        cbBuffer: server_reply.len() as u32,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: server_reply.as_ptr() as *mut _,
-    }];
-    let input_desc_round2 = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: in_buffers_round2.as_mut_ptr(),
-    };
-
-    // Prepare output buffer for the generated Step 3 token.
-    let mut out_buffers_round2 = [SecBuffer {
-        cbBuffer: max_token_size,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: out_token.as_mut_ptr() as *mut _,
-    }];
-    let mut output_desc_round2 = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: out_buffers_round2.as_mut_ptr(),
-    };
-
-    // Note: We use the context handle from the first round call.
-    let h_context_round1 = ph_new_context;
-    let result_round2 = gk.initialize_security_context_a(
-        &ph_credential,
-        &h_context_round1,
-        "",
-        0,
-        0,
-        SECURITY_NATIVE_DREP,
-        &input_desc_round2 as *const _ as usize,
-        0,
-        &mut ph_new_context,
-        &mut output_desc_round2 as *mut _ as usize,
-        &mut pf_context_attr,
-        &mut ts_expiry as *mut i64 as usize,
-    );
-
-    if result_round2 != SEC_E_OK {
-        println!(
-            "InitializeSecurityContextA (Round 2) failed: {:#x}",
-            result_round2
+        isc_status = gkpass.initialize_security_context_a(
+            &client_cred,
+            &ctx_for_isc,
+            "",
+            0,
+            0,
+            SECURITY_NATIVE_DREP,
+            &isc_input_desc as *const _ as usize,
+            0,
+            &mut client_ctx_new,
+            &mut isc_output_desc as *mut _ as usize,
+            &mut pf_context_attr,
+            &mut ts_expiry as *mut i64 as usize,
         );
-        return;
-    }
 
-    print_round_results(2, &out_buffers_round2[0], &out_token);
+        println!("  ISC returned: {:#x}", isc_status);
 
-    // --- Security Context Handshake (Round 3) ---
-    // Simulating the server switching to Passport by sending "OK".
-    println!("\n=== Receiving 'OK' Challenge (Round 3) - Switching to Passport ===");
+        let isc_cb = isc_out_buffers[0].cbBuffer as usize;
+        if isc_cb > 0 {
+            println!("  Client output token ({} bytes):", isc_cb);
+            hexdump(&isc_out_token[..isc_cb]);
+        } else {
+            println!("  Client output token (0 bytes)");
+        }
 
-    let ok_reply = b"OK";
-    let mut in_buffers_round3 = [SecBuffer {
-        cbBuffer: 2,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: ok_reply.as_ptr() as *mut _,
-    }];
-    let input_desc_round3 = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: in_buffers_round3.as_mut_ptr(),
-    };
+        if isc_status != SEC_I_CONTINUE_NEEDED && isc_status != SEC_E_OK {
+            println!("  ISC failed with error: {:#x}", isc_status);
+            break;
+        }
 
-    // Prepare output buffer for Passport token.
-    let mut out_token_passport = vec![0u8; 1024];
-    let mut out_buffers_round3 = [SecBuffer {
-        cbBuffer: 1024,
-        BufferType: SECBUFFER_TOKEN,
-        pvBuffer: out_token_passport.as_mut_ptr() as *mut _,
-    }];
-    let mut output_desc_round3 = SecBufferDesc {
-        ulVersion: 0,
-        cBuffers: 1,
-        pBuffers: out_buffers_round3.as_mut_ptr(),
-    };
+        let client_output_len = isc_out_buffers[0].cbBuffer;
 
-    let result_round3 = gk.initialize_security_context_a(
-        &ph_credential,
-        &h_context_round1,
-        "",
-        0,
-        0,
-        SECURITY_NATIVE_DREP,
-        &input_desc_round3 as *const _ as usize,
-        0,
-        &mut ph_new_context,
-        &mut output_desc_round3 as *mut _ as usize,
-        &mut pf_context_attr,
-        &mut ts_expiry as *mut i64 as usize,
-    );
+        // ===== Server: AcceptSecurityContext =====
+        println!("\n=== ASC Round {} (Server) ===", round);
 
-    if result_round3 != SEC_I_CONTINUE_NEEDED {
-        println!(
-            "InitializeSecurityContextA (Round 3) failed: {:#x}",
-            result_round3
+        let mut asc_in_buffers = [
+            SecBuffer {
+                cbBuffer: client_output_len,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: isc_out_token.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: 16,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: guid.as_mut_ptr() as *mut _,
+            },
+            SecBuffer {
+                cbBuffer: hostname.len() as u32,
+                BufferType: SECBUFFER_PKG_PARAMS,
+                pvBuffer: hostname.as_ptr() as *mut _,
+            },
+        ];
+        let asc_input_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: if first_asc { 3 } else { 1 },
+            pBuffers: asc_in_buffers.as_mut_ptr(),
+        };
+
+        asc_out_token.fill(0);
+        let mut asc_out_buffers = [SecBuffer {
+            cbBuffer: max_token_size as u32,
+            BufferType: SECBUFFER_TOKEN,
+            pvBuffer: asc_out_token.as_mut_ptr() as *mut _,
+        }];
+        let mut asc_output_desc = SecBufferDesc {
+            ulVersion: 0,
+            cBuffers: 1,
+            pBuffers: asc_out_buffers.as_mut_ptr(),
+        };
+
+        let mut ctx_for_asc = if first_asc {
+            Handle::default()
+        } else {
+            server_ctx_new.clone()
+        };
+
+        let mut next_server_ctx = Handle::default();
+
+        let asc_res = gkpass.accept_security_context(
+            &server_cred,
+            &mut ctx_for_asc,
+            &asc_input_desc as *const _ as usize,
+            0,
+            SECURITY_NATIVE_DREP,
+            &mut next_server_ctx,
+            &mut asc_output_desc as *mut _ as usize,
+            &mut pf_context_attr,
+            &mut ts_expiry as *mut i64 as usize,
         );
-        return;
+
+        if first_asc {
+            server_ctx_new = next_server_ctx;
+        } else if next_server_ctx.lower != 0 || next_server_ctx.upper != 0 {
+            server_ctx_new = next_server_ctx;
+        }
+
+        println!("  ASC returned: {:#x}", asc_res);
+
+        let asc_cb = asc_out_buffers[0].cbBuffer as usize;
+        if asc_cb > 0 {
+            println!("  Server output token ({} bytes):", asc_cb);
+            hexdump(&asc_out_token[..asc_cb]);
+        } else {
+            println!("  Server output token (0 bytes)");
+        }
+
+        if asc_res != SEC_I_CONTINUE_NEEDED && asc_res != SEC_E_OK {
+            println!("  ASC failed with error: {:#x}", asc_res);
+            break;
+        }
+
+        if asc_res == SEC_E_OK && asc_cb == 0 {
+            println!("\n✓ Server returned SEC_E_OK with no output. Handshake complete!");
+            break;
+        }
+
+        last_server_output_len = asc_out_buffers[0].cbBuffer;
+
+        if asc_res == SEC_E_OK && isc_status == SEC_E_OK {
+            println!("\n✓ Both client and server report SEC_E_OK. Handshake complete!");
+            break;
+        }
+
+        first_asc = false;
+        first_isc = false;
+
+        // Safety stop
+        if round > 10 {
+            eprintln!("Too many rounds — something is wrong.");
+            break;
+        }
     }
 
-    print_round_results(3, &out_buffers_round3[0], &out_token_passport);
-    println!("\nSuccessfully transitioned to Passport.");
+    // --- Query Context Attributes ---
+    if isc_status == SEC_E_OK || isc_status == SEC_I_CONTINUE_NEEDED {
+        println!("\n=== Querying Client Context Attributes ===");
+        query_and_print_context_attributes(&gkpass, &client_ctx_new);
+
+        println!("\n=== Querying Server Context Attributes ===");
+        query_and_print_context_attributes(&gkpass, &server_ctx_new);
+    }
+
+    gkpass.delete_security_context(&client_ctx_new);
+    gkpass.delete_security_context(&server_ctx_new);
+    gkpass.free_credentials_handle(&client_cred);
+    gkpass.free_credentials_handle(&server_cred);
+
+    gkpass.shutdown();
+
+    println!("\nGateKeeperPassport handshake demo complete.");
 }

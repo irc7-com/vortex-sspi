@@ -52,44 +52,218 @@ impl SecurityProvider for GateKeeperProvider {
 
     fn accept_security_context(
         &self,
-        _ph_credential: &Handle,
-        _ph_context: &mut Handle,
-        _p_input: usize,
+        ph_credential: &Handle,
+        ph_context: &mut Handle,
+        p_input: usize,
         _f_context_req: u32,
-        _target_data_rep: u32,
-        _ph_new_context: &mut Handle,
-        _p_output: usize,
+        target_data_rep: u32,
+        ph_new_context: &mut Handle,
+        p_output: usize,
         _pf_context_attr: &mut u32,
-        _pts_expiry: usize,
+        pts_expiry: usize,
     ) -> SecurityStatus {
-        use crate::base_provider::{SEC_I_CONTINUE_NEEDED, SECBUFFER_TOKEN, find_sec_buffer};
-        if _ph_context.lower == 0 && _ph_context.upper == 0 {
-            let server_reply: [u8; 24] = [
-                0x47, 0x4B, 0x53, 0x53, 0x50, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x00,
-                0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            ];
-            if let Some(out_token) = unsafe { find_sec_buffer(_p_output, SECBUFFER_TOKEN, 0) } {
+        use crate::base_provider::{
+            find_sec_buffer, SECBUFFER_PKG_PARAMS, SECBUFFER_TOKEN, SEC_E_INVALID_HANDLE,
+            SEC_E_INVALID_TOKEN, SEC_E_OK, SEC_E_UNKNOWN_CREDENTIALS, SEC_E_UNSUPPORTED_FUNCTION,
+            SEC_I_CONTINUE_NEEDED,
+        };
+        use hmac::{Hmac, KeyInit, Mac};
+        use md5::Md5;
+        use std::ptr;
+
+        if !self.base.is_valid_credential_handle(ph_credential) {
+            return SEC_E_UNKNOWN_CREDENTIALS;
+        }
+
+        if target_data_rep != SECURITY_NATIVE_DREP {
+            return SEC_E_UNSUPPORTED_FUNCTION;
+        }
+
+        unsafe {
+            let pts = pts_expiry as *mut u64;
+            if !pts.is_null() {
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
+        let is_initial = ph_context.lower == 0 && ph_context.upper == 0;
+
+        if is_initial {
+            let input_token_res = unsafe { find_sec_buffer(p_input, SECBUFFER_TOKEN, 0) };
+            let output_token_res = unsafe { find_sec_buffer(p_output, SECBUFFER_TOKEN, 0) };
+            if input_token_res.is_none() || output_token_res.is_none() {
+                return SEC_E_INVALID_TOKEN;
+            }
+            let input_token = input_token_res.unwrap();
+            let output_token = output_token_res.unwrap();
+
+            let pb0_res = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 0) };
+            let pb1_res = unsafe { find_sec_buffer(p_input, SECBUFFER_PKG_PARAMS, 1) };
+            if pb0_res.is_none() || pb1_res.is_none() {
+                return SEC_E_INVALID_TOKEN;
+            }
+            let pb0 = pb0_res.unwrap();
+            let pb1 = pb1_res.unwrap();
+
+            // Validate Input Token (Step 1)
+            let version;
+            unsafe {
+                let p_in = (*input_token).pvBuffer as *const u32;
+                let cb_in = (*input_token).cbBuffer;
+                if cb_in != 16 {
+                    return SEC_E_INVALID_TOKEN;
+                }
+                let mut magic = [0u8; 8];
+                ptr::copy_nonoverlapping(p_in as *const u8, magic.as_mut_ptr(), 8);
+                if &magic[0..5] != b"GKSSP" {
+                    return SEC_E_INVALID_TOKEN;
+                }
+                version = *p_in.add(2);
+                let step = *p_in.add(3);
+                if step != 1 {
+                    return SEC_E_INVALID_TOKEN;
+                }
+            }
+
+            let mut sm_lock = self.base.session_manager.lock();
+            if let Some(ref mut sm) = *sm_lock
+                && let Some(handle) = sm.create_context()
+                && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
+                && let Some(session_arc) = gk_sm.get_session(&handle)
+            {
+                let mut session = session_arc.lock();
+
                 unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        server_reply.as_ptr(),
-                        (*out_token).pvBuffer as *mut u8,
-                        24,
+                    // Extract Hostname
+                    let p_host = (*pb0).pvBuffer as *const u8;
+                    let cb_host = (*pb0).cbBuffer;
+                    let copy_len = std::cmp::min(cb_host as usize, 15);
+                    ptr::copy_nonoverlapping(p_host, session.hostname.as_mut_ptr(), copy_len);
+                    session.hostname[copy_len] = 0;
+                    session.hostname_len = copy_len as u32;
+
+                    // Extract Flags
+                    let p_flags = (*pb1).pvBuffer as *const u8;
+                    let cb_flags = (*pb1).cbBuffer;
+                    if cb_flags > 0 {
+                        session.version_flag = *p_flags;
+                    }
+
+                    let is_valid_version = if session.version_flag == 0 {
+                        version >= 3 && version <= 4
+                    } else {
+                        version >= 1 && version <= 4
+                    };
+
+                    if !is_valid_version {
+                        return SEC_E_INVALID_TOKEN;
+                    }
+
+                    // Server Nonce (Hardcoded for demo predictability)
+                    session.server_nonce = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+                    // Generate Output Token (Step 2 Challenge)
+                    let p_out = (*output_token).pvBuffer as *mut u32;
+                    ptr::write_bytes(p_out, 0, 6);
+                    ptr::copy_nonoverlapping(b"GKSSP\0\0\0".as_ptr(), p_out as *mut u8, 8);
+                    *p_out.add(2) = version; // Echo version
+                    *p_out.add(3) = 2; // Step 2
+                    ptr::copy_nonoverlapping(
+                        session.server_nonce.as_ptr(),
+                        p_out.add(4) as *mut u8,
+                        8,
                     );
-                    (*out_token).cbBuffer = 24;
+                    (*output_token).cbBuffer = 24;
                 }
+
+                session.flags |= 2;
+                *ph_new_context = handle;
+                return SEC_I_CONTINUE_NEEDED;
             }
-            *_ph_new_context = Handle {
-                lower: 8888,
-                upper: 9999,
-            };
-            SEC_I_CONTINUE_NEEDED
+            SEC_E_INVALID_TOKEN
         } else {
-            if let Some(out_token) = unsafe { find_sec_buffer(_p_output, SECBUFFER_TOKEN, 0) } {
-                unsafe {
-                    (*out_token).cbBuffer = 0;
-                }
+            // Processing Step 3 token from Client
+            let input_token_res = unsafe { find_sec_buffer(p_input, SECBUFFER_TOKEN, 0) };
+            if input_token_res.is_none() {
+                return SEC_E_INVALID_TOKEN;
             }
-            SEC_E_OK
+            let input_token = input_token_res.unwrap();
+            
+            let mut sm_lock = self.base.session_manager.lock();
+            if let Some(ref mut sm) = *sm_lock
+                && let Some(gk_sm) = sm.as_any().downcast_ref::<GateKeeperSessionManager>()
+                && let Some(session_arc) = gk_sm.get_session(ph_context)
+            {
+                let mut session = session_arc.lock();
+
+                let is_match = true;
+                unsafe {
+                    let p_in = (*input_token).pvBuffer as *const u32;
+                    let cb_in = (*input_token).cbBuffer;
+                    
+                    let mut magic = [0u8; 8];
+                    ptr::copy_nonoverlapping(p_in as *const u8, magic.as_mut_ptr(), 8);
+                    if &magic[0..5] != b"GKSSP" {
+                        return SEC_E_INVALID_TOKEN;
+                    }
+                    let version = *p_in.add(2);
+                    let step = *p_in.add(3);
+
+                    let is_valid_version = if session.version_flag == 0 {
+                        version >= 3 && version <= 4
+                    } else {
+                        version >= 1 && version <= 4
+                    };
+
+                    if !is_valid_version || step != 3 {
+                        return SEC_E_INVALID_TOKEN;
+                    }
+
+                    if version >= 2 && cb_in != 48 {
+                        return SEC_E_INVALID_TOKEN;
+                    } else if version == 1 && cb_in != 32 {
+                        return SEC_E_INVALID_TOKEN;
+                    }
+
+                    if version >= 2 {
+                        let p_guid = p_in.add(8) as *const u8;
+                        ptr::copy_nonoverlapping(p_guid, &mut session.gatekeeper_id as *mut _ as *mut u8, 16);
+                    }
+
+                    // Verify HMAC
+                    let p_hmac = p_in.add(4) as *const u8;
+
+                    let mut data = Vec::with_capacity(8 + session.hostname_len as usize);
+                    data.extend_from_slice(&session.server_nonce);
+                    data.extend_from_slice(&session.hostname[..session.hostname_len as usize]);
+
+                    type HmacMd5 = Hmac<Md5>;
+                    let mut mac = HmacMd5::new_from_slice(&session.hmac_key).unwrap();
+                    mac.update(&data);
+                    let result = mac.finalize().into_bytes();
+
+                    let mut is_match = true;
+                    for i in 0..16 {
+                        if result[i] != *p_hmac.add(i) {
+                            is_match = false;
+                        }
+                    }
+                }
+
+                if !is_match {
+                    return SEC_E_INVALID_TOKEN;
+                }
+
+                if let Some(out_token) = unsafe { find_sec_buffer(p_output, SECBUFFER_TOKEN, 0) } {
+                    unsafe {
+                        (*out_token).cbBuffer = 0;
+                    }
+                }
+
+                session.flags |= 8; // Handshake complete
+                return SEC_E_OK;
+            }
+            SEC_E_INVALID_HANDLE
         }
     }
 
@@ -223,7 +397,13 @@ impl SecurityProvider for GateKeeperProvider {
                     let version = *p_in.add(2);
                     let step = *p_in.add(3);
 
-                    if version < 3 || step != 2 {
+                    let is_valid_version = if session.version_flag == 0 {
+                        version >= 3 && version <= 4
+                    } else {
+                        version >= 1 && version <= 4
+                    };
+
+                    if !is_valid_version || step != 2 {
                         return SEC_E_INVALID_TOKEN;
                     }
 

@@ -165,10 +165,8 @@ pub fn main() {
 
         println!("  ISC returned: {:#x}", isc_status);
         if isc_output_len > 0 {
-            if isc_status != SEC_E_OK {
-                println!("  Client output token ({} bytes):", isc_output_len);
-                hexdump(&isc_out_token[..isc_output_len as usize]);
-            }
+            println!("  Client output token ({} bytes):", isc_output_len);
+            hexdump(&isc_out_token[..isc_output_len as usize]);
         }
 
         if isc_status != SEC_E_OK && isc_status != SEC_I_CONTINUE_NEEDED {
@@ -235,10 +233,8 @@ pub fn main() {
 
         println!("  ASC returned: {:#x}", asc_status);
         if last_server_output_len > 0 {
-            if asc_status != SEC_E_OK {
-                println!("  Server output token ({} bytes):", last_server_output_len);
-                hexdump(&asc_out_token[..last_server_output_len as usize]);
-            }
+            println!("  Server output token ({} bytes):", last_server_output_len);
+            hexdump(&asc_out_token[..last_server_output_len as usize]);
         }
 
         if asc_status != SEC_E_OK && asc_status != SEC_I_CONTINUE_NEEDED {

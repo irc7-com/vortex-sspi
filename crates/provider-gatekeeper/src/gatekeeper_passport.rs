@@ -80,35 +80,326 @@ impl SecurityProvider for GateKeeperPassportProvider {
         Some(Box::new(GateKeeperPassportSessionManager::new()))
     }
 
-    fn accept_security_context(
+    fn acquire_credentials_handle_a(
         &self,
-        _: &Handle,
-        _: &mut Handle,
-        _: usize,
-        _: u32,
-        _: u32,
-        _: &mut Handle,
-        _: usize,
-        _: &mut u32,
-        _: usize,
+        _psz_principal: &str,
+        psz_package: &str,
+        f_credential_use: u32,
+        pv_logon_id: usize,
+        p_auth_data: usize,
+        p_get_key_fn: usize,
+        pv_get_key_arg: usize,
+        ph_credential: &mut Handle,
+        pts_expiry: usize,
     ) -> SecurityStatus {
-        SEC_E_OK
+        if psz_package != "GateKeeperPassport" {
+            return crate::base_provider::SEC_E_SECPKG_NOT_FOUND;
+        }
+
+        let mut gk_cred = Box::new(Handle::default());
+        let res = self.gatekeeper.acquire_credentials_handle_a(
+            "", // original code passes NULL
+            "GateKeeper",
+            f_credential_use,
+            pv_logon_id,
+            p_auth_data,
+            p_get_key_fn,
+            pv_get_key_arg,
+            &mut gk_cred,
+            pts_expiry,
+        );
+
+        if res != crate::base_provider::SEC_E_OK {
+            return res;
+        }
+
+        if f_credential_use == 0 || f_credential_use > 2 {
+            return crate::base_provider::SEC_E_NOT_SUPPORTED;
+        }
+
+        ph_credential.upper = 0;
+        ph_credential.lower = Box::into_raw(gk_cred) as usize;
+
+        unsafe {
+            let pts = pts_expiry as *mut u64;
+            if !pts.is_null() {
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
+        crate::base_provider::SEC_E_OK
     }
 
-    fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
+    fn free_credentials_handle(&self, h: &Handle) -> SecurityStatus {
+        if h.lower == 0 && h.upper == 0 {
+            return crate::base_provider::SEC_E_INVALID_HANDLE;
+        }
+
+        let gk_cred_ptr = h.lower as *mut Handle;
+        let res = self
+            .gatekeeper
+            .free_credentials_handle(unsafe { &*gk_cred_ptr });
+
+        unsafe {
+            let _ = Box::from_raw(gk_cred_ptr);
+        }
+        res
+    }
+
+    fn impersonate_security_context(&self, h: &Handle) -> SecurityStatus {
         let sm_lock = self.base.session_manager.lock();
         if let Some(sm) = sm_lock.as_ref()
             && let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
-                && let Some(session_arc) = gk_p_sm.get_session(h) {
-                    let session = session_arc.lock();
-                    if session.sub_contexts[0].lower != 0 || session.sub_contexts[0].upper != 0 {
-                        self.gatekeeper.delete_security_context(&session.sub_contexts[0]);
-                    }
-                    if session.sub_contexts[1].lower != 0 || session.sub_contexts[1].upper != 0 {
-                        self.passport.delete_security_context(&session.sub_contexts[1]);
-                    }
+            && let Some(session_arc) = gk_p_sm.get_session(h)
+        {
+            let session = session_arc.lock();
+            return self
+                .gatekeeper
+                .impersonate_security_context(&session.sub_contexts[0]);
+        }
+        crate::base_provider::SEC_E_INVALID_HANDLE
+    }
+
+    fn revert_security_context(&self, h: &Handle) -> SecurityStatus {
+        let sm_lock = self.base.session_manager.lock();
+        if let Some(sm) = sm_lock.as_ref()
+            && let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+            && let Some(session_arc) = gk_p_sm.get_session(h)
+        {
+            let session = session_arc.lock();
+            return self.gatekeeper.revert_security_context(&session.sub_contexts[0]);
+        }
+        crate::base_provider::SEC_E_INVALID_HANDLE
+    }
+
+    fn query_context_attributes_a(
+        &self,
+        h: &Handle,
+        ul_attribute: u32,
+        p_buffer: usize,
+    ) -> SecurityStatus {
+        let sm_lock = self.base.session_manager.lock();
+        let session_arc = if let Some(sm) = sm_lock.as_ref() {
+            if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
+                gk_p_sm.get_session(h)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let session_arc = match session_arc {
+            Some(arc) => arc,
+            None => return crate::base_provider::SEC_E_INVALID_HANDLE,
+        };
+
+        let session = session_arc.lock();
+
+        if ul_attribute == 0 {
+            // Fallback to GateKeeper
+            self.gatekeeper
+                .query_context_attributes_a(&session.sub_contexts[0], ul_attribute, p_buffer)
+        } else if ul_attribute == 1 {
+            // SECPKG_ATTR_NAMES
+            self.passport
+                .query_context_attributes_a(&session.sub_contexts[1], 1, p_buffer)
+        } else if ul_attribute == 2 {
+            // SECPKG_ATTR_LIFESPAN
+            unsafe {
+                let out = p_buffer as *mut u32;
+                *out = 0;
+                *out.add(1) = 0;
+                *out.add(2) = 0x7FFFFFFF;
+                *out.add(3) = 0x0FFFFFFF;
+            }
+            crate::base_provider::SEC_E_OK
+        } else {
+            crate::base_provider::SEC_E_UNSUPPORTED_FUNCTION
+        }
+    }
+
+    fn accept_security_context(
+        &self,
+        ph_credential: &Handle,
+        ph_context: &mut Handle,
+        p_input: usize,
+        f_context_req: u32,
+        target_data_rep: u32,
+        ph_new_context: &mut Handle,
+        p_output: usize,
+        pf_context_attr: &mut u32,
+        pts_expiry: usize,
+    ) -> SecurityStatus {
+        use crate::base_provider::{
+            SEC_E_INVALID_HANDLE, SEC_E_INVALID_TOKEN,
+            SEC_E_UNKNOWN_CREDENTIALS, SEC_I_CONTINUE_NEEDED,
+            SEC_E_NOT_SUPPORTED,
+        };
+
+        if ph_credential.lower == 0 {
+            return SEC_E_UNKNOWN_CREDENTIALS;
+        }
+        if target_data_rep != SECURITY_NATIVE_DREP {
+            return SEC_E_NOT_SUPPORTED;
+        }
+
+        unsafe {
+            let pts = pts_expiry as *mut u64;
+            if !pts.is_null() {
+                *pts = 0x0FFFFFFF_7FFFFFFF;
+            }
+        }
+
+        let output_token_res = unsafe { find_sec_buffer(p_output, SECBUFFER_TOKEN, 0) };
+        if output_token_res.is_none() {
+            return SEC_E_INVALID_TOKEN;
+        }
+        let output_token = output_token_res.unwrap();
+        let _max_length = unsafe { (*output_token).cbBuffer }; // unused but kept for parity
+
+        let mut sm_lock = self.base.session_manager.lock();
+
+        let session_arc = if ph_context.lower != 0 || ph_context.upper != 0 {
+            if let Some(sm) = sm_lock.as_ref() {
+                if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>() {
+                    gk_p_sm
+                        .get_session(ph_context)
+                        .ok_or(SEC_E_INVALID_HANDLE)
+                } else {
+                    Err(SEC_E_INVALID_HANDLE)
                 }
-        self.base.delete_security_context(h)
+            } else {
+                Err(SEC_E_INVALID_HANDLE)
+            }
+        } else {
+            if let Some(sm) = sm_lock.as_mut() {
+                if let Some(handle) = sm.create_context() {
+                    if let Some(gk_p_sm) =
+                        sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+                    {
+                        *ph_new_context = handle;
+                        Ok(gk_p_sm.get_session(&handle).unwrap())
+                    } else {
+                        Err(SEC_E_INVALID_HANDLE)
+                    }
+                } else {
+                    Err(SEC_E_INVALID_HANDLE)
+                }
+            } else {
+                Err(SEC_E_INVALID_HANDLE)
+            }
+        };
+
+        let session_arc = match session_arc {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+
+        let mut session = session_arc.lock();
+        let state = session.state;
+        let gk_cred = unsafe { &*(ph_credential.lower as *const Handle) };
+
+        match state {
+            160 => {
+                let context_handle = session.sub_contexts[0];
+                let res = self.gatekeeper.accept_security_context(
+                    gk_cred,
+                    &mut context_handle.clone(),
+                    p_input,
+                    f_context_req,
+                    target_data_rep,
+                    &mut session.sub_contexts[0],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                );
+                if res >= 0 {
+                    session.state = 161;
+                }
+                res
+            }
+            161 => {
+                let mut context_handle = session.sub_contexts[0];
+                let res = self.gatekeeper.accept_security_context(
+                    gk_cred,
+                    &mut context_handle,
+                    p_input,
+                    f_context_req,
+                    target_data_rep,
+                    &mut session.sub_contexts[0],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                );
+                if res == SEC_E_OK {
+                    session.state = 162;
+                    unsafe {
+                        let out_ptr = (*output_token).pvBuffer as *mut u8;
+                        std::ptr::copy_nonoverlapping(b"OK".as_ptr(), out_ptr, 2);
+                        (*output_token).cbBuffer = 2;
+                    }
+                    SEC_I_CONTINUE_NEEDED // 0x90312 == 590610
+                } else {
+                    res
+                }
+            }
+            162 => {
+                let context_handle = session.sub_contexts[1];
+                let res = self.passport.accept_security_context(
+                    &self.passport_creds,
+                    &mut context_handle.clone(),
+                    p_input,
+                    f_context_req,
+                    target_data_rep,
+                    &mut session.sub_contexts[1],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                );
+                if res >= 0 {
+                    session.state = 163;
+                }
+                res
+            }
+            163 => {
+                let mut context_handle = session.sub_contexts[1];
+                self.passport.accept_security_context(
+                    &self.passport_creds,
+                    &mut context_handle,
+                    p_input,
+                    f_context_req,
+                    target_data_rep,
+                    &mut session.sub_contexts[1],
+                    p_output,
+                    pf_context_attr,
+                    pts_expiry,
+                )
+            }
+            _ => p_output as i32, // Odd fallback from IDA
+        }
+    }
+
+    fn delete_security_context(&self, h: &Handle) -> SecurityStatus {
+        let mut sm_lock = self.base.session_manager.lock();
+        if let Some(sm) = sm_lock.as_mut() {
+            if let Some(gk_p_sm) = sm.as_any().downcast_ref::<GateKeeperPassportSessionManager>()
+                && let Some(session_arc) = gk_p_sm.get_session(h)
+            {
+                let session = session_arc.lock();
+                if session.state != 160 {
+                    let _ = self.gatekeeper.delete_security_context(&session.sub_contexts[0]);
+                }
+                if session.state == 163 || session.state == 164 {
+                    let _ = self
+                        .passport
+                        .delete_security_context(&session.sub_contexts[1]);
+                }
+            }
+            sm.delete_context(h);
+            return crate::base_provider::SEC_E_OK;
+        }
+        crate::base_provider::SEC_E_INVALID_HANDLE
     }
 
     fn initialize_security_context_a(
@@ -131,7 +422,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
             SEC_E_UNKNOWN_CREDENTIALS, SEC_E_UNSUPPORTED_FUNCTION, SEC_I_CONTINUE_NEEDED,
         };
 
-        if !self.base.is_valid_credential_handle(ph_credential) {
+        if ph_credential.lower == 0 {
             return SEC_E_UNKNOWN_CREDENTIALS;
         }
         if !psz_target_name.is_empty() {
@@ -356,21 +647,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
     ) -> SecurityStatus {
         self.base.enumerate_security_packages_w(pc, pp)
     }
-    fn acquire_credentials_handle_a(
-        &self,
-        p1: &str,
-        p2: &str,
-        p3: u32,
-        p4: usize,
-        p5: usize,
-        p6: usize,
-        p7: usize,
-        p8: &mut Handle,
-        p9: usize,
-    ) -> SecurityStatus {
-        self.base
-            .acquire_credentials_handle_a(p1, p2, p3, p4, p5, p6, p7, p8, p9)
-    }
+
     fn acquire_credentials_handle_w(
         &self,
         p1: &str,
@@ -389,9 +666,7 @@ impl SecurityProvider for GateKeeperPassportProvider {
     fn free_context_buffer(&self, b: usize) -> SecurityStatus {
         self.base.free_context_buffer(b)
     }
-    fn free_credentials_handle(&self, h: &Handle) -> SecurityStatus {
-        self.base.free_credentials_handle(h)
-    }
+
     fn query_security_package_info_a(&self, n: &str, p: &mut usize) -> SecurityStatus {
         self.base.query_security_package_info_a(n, p)
     }
