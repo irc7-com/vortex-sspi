@@ -12,5 +12,8 @@ md-5 = "0.11.0-rc.2"
 version = "0.61.2"
 features = [
     "Win32_Security_Authentication_Identity",
+    "Win32_Security_Credentials",
     "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
 ]
